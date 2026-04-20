@@ -21,10 +21,11 @@ import (
 
 const (
 	defaultAPIBase     = "https://api.hetzner.cloud/v1"
-	tokenFilePath      = "/var/run/secrets/hetzner-dns/token"
 	presentTTL         = 60
 	maxAPIResponseSize = 1 << 20
 )
+
+var tokenFilePath = "/var/run/secrets/hetzner-dns/token"
 
 type DNSClient struct {
 	baseURL    string
@@ -60,14 +61,15 @@ type httpError struct {
 func (e *httpError) Error() string { return fmt.Sprintf("http %d: %s", e.StatusCode, e.Body) }
 
 func NewDNSClient() (*DNSClient, error) {
-	token := strings.TrimSpace(os.Getenv("HETZNER_DNS_API_TOKEN"))
+	var token string
+	data, err := os.ReadFile(tokenFilePath)
+	if err == nil {
+		token = strings.TrimSpace(string(data))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read token file: %w", err)
+	}
 	if token == "" {
-		data, err := os.ReadFile(tokenFilePath)
-		if err == nil {
-			token = strings.TrimSpace(string(data))
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("read token file: %w", err)
-		}
+		token = strings.TrimSpace(os.Getenv("HETZNER_DNS_API_TOKEN"))
 	}
 	if token == "" {
 		return nil, errors.New("missing HETZNER_DNS_API_TOKEN and token file")

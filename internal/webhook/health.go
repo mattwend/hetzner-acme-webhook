@@ -25,6 +25,7 @@ type healthState struct {
 	enabled bool
 
 	mu           sync.Mutex
+	checking     bool
 	checkedAt    time.Time
 	lastErr      error
 	lastCheckDur time.Duration
@@ -59,14 +60,26 @@ func (s *healthState) check(parent context.Context) error {
 		return nil
 	}
 
-	now := time.Now()
-	s.mu.Lock()
-	if !s.checkedAt.IsZero() && now.Sub(s.checkedAt) < healthCacheTTL {
-		err := s.lastErr
+	for {
+		now := time.Now()
+		s.mu.Lock()
+		if !s.checkedAt.IsZero() && now.Sub(s.checkedAt) < healthCacheTTL {
+			err := s.lastErr
+			s.mu.Unlock()
+			return err
+		}
+		if !s.checking {
+			s.checking = true
+			s.mu.Unlock()
+			break
+		}
 		s.mu.Unlock()
-		return err
+		select {
+		case <-parent.Done():
+			return parent.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
-	s.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
@@ -75,6 +88,7 @@ func (s *healthState) check(parent context.Context) error {
 	dur := time.Since(start)
 
 	s.mu.Lock()
+	s.checking = false
 	s.checkedAt = time.Now()
 	s.lastErr = err
 	s.lastCheckDur = dur

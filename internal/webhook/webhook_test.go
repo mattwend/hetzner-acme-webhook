@@ -136,6 +136,26 @@ func TestZoneFromEnvMissing(t *testing.T) {
 	}
 }
 
+func TestNewDNSClientPrefersTokenFileOverEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HETZNER_DNS_API_TOKEN", "from-env")
+	t.Setenv("HETZNER_DNS_API_BASE_URL", "https://example.invalid")
+	oldPath := tokenFilePath
+	t.Cleanup(func() { tokenFilePath = oldPath })
+	tokenFilePath = dir + "/token"
+	if err := os.WriteFile(tokenFilePath, []byte("from-file\n"), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+
+	c, err := NewDNSClient()
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	if c.token != "from-file" {
+		t.Fatalf("got token %q", c.token)
+	}
+}
+
 func TestHealthCheckCachesResult(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
