@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 )
 
@@ -106,6 +107,35 @@ func TestZoneNotFound(t *testing.T) {
 	}
 }
 
+func TestZoneFromConfigFallsBackToEnv(t *testing.T) {
+	t.Setenv("HETZNER_DNS_ZONE", "env.example")
+	zone, err := zoneFromConfig(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if zone != "env.example" {
+		t.Fatalf("got %q", zone)
+	}
+}
+
+func TestZoneFromConfigPrefersConfig(t *testing.T) {
+	t.Setenv("HETZNER_DNS_ZONE", "env.example")
+	zone, err := zoneFromConfig([]byte(`{"zone":"cfg.example"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if zone != "cfg.example" {
+		t.Fatalf("got %q", zone)
+	}
+}
+
+func TestZoneFromEnvMissing(t *testing.T) {
+	_ = os.Unsetenv("HETZNER_DNS_ZONE")
+	if _, err := ZoneFromEnv(); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestHealthCheckCachesResult(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -115,8 +145,9 @@ func TestHealthCheckCachesResult(t *testing.T) {
 	defer server.Close()
 
 	state := &healthState{
-		client: &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()},
-		zone:   "example.test",
+		client:  &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()},
+		zone:    "example.test",
+		enabled: true,
 	}
 	if err := state.check(context.Background()); err != nil {
 		t.Fatalf("first check: %v", err)
@@ -126,5 +157,12 @@ func TestHealthCheckCachesResult(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("expected 1 upstream call, got %d", calls)
+	}
+}
+
+func TestHealthCheckDisabledWithoutZone(t *testing.T) {
+	state := &healthState{enabled: false}
+	if err := state.check(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -20,7 +20,8 @@ func main() {
 
 	zone, err := webhook.ZoneFromEnv()
 	if err != nil {
-		klog.Fatalf("configure client: %v", err)
+		klog.Infof("health checks will run in local-only mode: %v", err)
+		zone = ""
 	}
 
 	go webhook.ServeHealth(client, zone)

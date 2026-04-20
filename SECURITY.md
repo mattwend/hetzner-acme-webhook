@@ -40,7 +40,7 @@ Main threats considered:
 ## Current hardening
 
 The webhook currently:
-- requires an explicit `HETZNER_DNS_ZONE`
+- supports per-solver zone configuration and optional `HETZNER_DNS_ZONE` fallback
 - rejects FQDNs outside the configured zone
 - validates record names before DNS mutations
 - URL-escapes record names in delete paths

@@ -6,6 +6,7 @@ package webhook
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,14 +14,15 @@ import (
 )
 
 const (
-	GroupName        = "acme.example.com"
+	GroupName        = "acme.mattwend.github.io"
 	healthListenAddr = ":8080"
 	healthCacheTTL   = 10 * time.Second
 )
 
 type healthState struct {
-	client *DNSClient
-	zone   string
+	client  *DNSClient
+	zone    string
+	enabled bool
 
 	mu           sync.Mutex
 	checkedAt    time.Time
@@ -29,7 +31,7 @@ type healthState struct {
 }
 
 func ServeHealth(client *DNSClient, zone string) {
-	state := &healthState{client: client, zone: zone}
+	state := &healthState{client: client, zone: zone, enabled: strings.TrimSpace(zone) != ""}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := state.check(r.Context()); err != nil {
@@ -53,6 +55,10 @@ func ServeHealth(client *DNSClient, zone string) {
 }
 
 func (s *healthState) check(parent context.Context) error {
+	if !s.enabled {
+		return nil
+	}
+
 	now := time.Now()
 	s.mu.Lock()
 	if !s.checkedAt.IsZero() && now.Sub(s.checkedAt) < healthCacheTTL {
