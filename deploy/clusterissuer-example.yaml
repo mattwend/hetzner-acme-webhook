@@ -1,0 +1,23 @@
+# Example ClusterIssuer. Review and customize before applying in production.
+# This example sets `config.zone` explicitly so it works with the default install manifest,
+# which intentionally leaves HETZNER_DNS_ZONE unset.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-hetzner
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: you@example.com
+    privateKeySecretRef:
+      name: letsencrypt-hetzner
+    solvers:
+      - dns01:
+          webhook:
+            groupName: acme.mattwend.github.io
+            solverName: hetzner
+            config:
+              zone: example.com

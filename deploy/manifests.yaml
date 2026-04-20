@@ -1,0 +1,283 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hetzner-dns-token
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+type: Opaque
+stringData:
+  token: "REPLACE_WITH_HETZNER_DNS_API_TOKEN"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hetzner-acme-webhook
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hetzner-acme-webhook:webhook-authentication-reader
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      - extension-apiserver-authentication
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hetzner-acme-webhook:webhook-authentication-reader
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hetzner-acme-webhook:webhook-authentication-reader
+subjects:
+  - kind: ServiceAccount
+    name: hetzner-acme-webhook
+    namespace: cert-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hetzner-acme-webhook:auth-delegator
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: hetzner-acme-webhook
+    namespace: cert-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hetzner-acme-webhook:domain-solver
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+rules:
+  - apiGroups:
+      - acme.mattwend.github.io
+    resources:
+      - '*'
+    verbs:
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hetzner-acme-webhook:domain-solver
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hetzner-acme-webhook:domain-solver
+subjects:
+  - kind: ServiceAccount
+    name: cert-manager
+    namespace: cert-manager
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: hetzner-acme-webhook-selfsigned
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hetzner-acme-webhook-ca
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+spec:
+  secretName: hetzner-acme-webhook-ca
+  duration: 43800h # 5y
+  issuerRef:
+    name: hetzner-acme-webhook-selfsigned
+  commonName: ca.hetzner-acme-webhook.cert-manager
+  isCA: true
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: hetzner-acme-webhook-ca
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+spec:
+  ca:
+    secretName: hetzner-acme-webhook-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hetzner-acme-webhook-tls
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+spec:
+  secretName: hetzner-acme-webhook-tls
+  duration: 8760h # 1y
+  issuerRef:
+    name: hetzner-acme-webhook-ca
+  dnsNames:
+    - hetzner-acme-webhook
+    - hetzner-acme-webhook.cert-manager
+    - hetzner-acme-webhook.cert-manager.svc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hetzner-acme-webhook
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+spec:
+  # Scale replicas and add affinity/topology constraints as needed for HA.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hetzner-acme-webhook
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hetzner-acme-webhook
+        app.kubernetes.io/version: 1.0.0
+    spec:
+      serviceAccountName: hetzner-acme-webhook
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: webhook
+          image: ghcr.io/mattwend/hetzner-acme-webhook:v1.0.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --secure-port=8443
+            - --tls-cert-file=/tls/tls.crt
+            - --tls-private-key-file=/tls/tls.key
+          env:
+            - name: HETZNER_DNS_API_BASE_URL
+              value: https://api.hetzner.cloud/v1
+            # Optional: uncomment to enable upstream-backed health checks and a
+            # default zone when solver config omits `zone`.
+            # - name: HETZNER_DNS_ZONE
+            #   value: example.com
+          ports:
+            - name: https
+              containerPort: 8443
+            - name: healthz
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: healthz
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: hetzner-token
+              mountPath: /var/run/secrets/hetzner-dns
+              readOnly: true
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+      volumes:
+        - name: hetzner-token
+          secret:
+            secretName: hetzner-dns-token
+            items:
+              - key: token
+                path: token
+        - name: tls
+          secret:
+            secretName: hetzner-acme-webhook-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hetzner-acme-webhook
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+spec:
+  selector:
+    app.kubernetes.io/name: hetzner-acme-webhook
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.acme.mattwend.github.io
+  labels:
+    app.kubernetes.io/name: hetzner-acme-webhook
+    app.kubernetes.io/version: 1.0.0
+  annotations:
+    cert-manager.io/inject-ca-from: cert-manager/hetzner-acme-webhook-tls
+spec:
+  group: acme.mattwend.github.io
+  version: v1alpha1
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  service:
+    name: hetzner-acme-webhook
+    namespace: cert-manager
+    port: 443
