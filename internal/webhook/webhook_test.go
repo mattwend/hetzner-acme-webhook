@@ -1,0 +1,130 @@
+// SPDX-FileCopyrightText: 2026 Matthias Wende
+// SPDX-License-Identifier: GPL-3.0-only
+
+package webhook
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestFQDNToRelative(t *testing.T) {
+	got, err := fqdnToRelative("_acme-challenge.test.example.test.", "example.test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "_acme-challenge.test" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFQDNToRelativeRejectsOutsideZone(t *testing.T) {
+	if _, err := fqdnToRelative("_acme-challenge.test.other.test", "example.test"); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestValidateRecordNameRejectsTraversal(t *testing.T) {
+	if err := validateRecordName("../../evil"); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestPresentAndCleanup(t *testing.T) {
+	var posted map[string]any
+	var deleted string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{{"id": "zone-1", "name": "example.test"}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-1/rrsets":
+			_ = json.NewEncoder(w).Encode(map[string]any{"rrsets": []map[string]any{}})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-1/rrsets":
+			defer r.Body.Close()
+			_ = json.NewDecoder(r.Body).Decode(&posted)
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodDelete:
+			deleted = r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}
+	ctx := context.Background()
+	if err := c.present(ctx, "example.test", "_acme-challenge.test", "token-value"); err != nil {
+		t.Fatalf("present: %v", err)
+	}
+	if posted["name"] != "_acme-challenge.test" || posted["type"] != "TXT" {
+		t.Fatalf("unexpected payload: %#v", posted)
+	}
+	if err := c.cleanup(ctx, "example.test", "_acme-challenge.test"); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if deleted != "/zones/zone-1/rrsets/_acme-challenge.test/TXT" {
+		t.Fatalf("unexpected delete path: %s", deleted)
+	}
+}
+
+func TestCleanupEscapesRecordNameInPath(t *testing.T) {
+	var deleted string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{{"id": "zone-1", "name": "example.test"}}})
+		case r.Method == http.MethodDelete:
+			deleted = r.URL.EscapedPath()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}
+	if err := c.cleanup(context.Background(), "example.test", "_acme-challenge.test"); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if deleted != "/zones/zone-1/rrsets/_acme-challenge.test/TXT" {
+		t.Fatalf("unexpected escaped delete path: %s", deleted)
+	}
+}
+
+func TestZoneNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{}})
+	}))
+	defer server.Close()
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}
+	if _, err := c.zoneID(context.Background(), "missing.example"); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestHealthCheckCachesResult(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{{"id": "zone-1", "name": "example.test"}}})
+	}))
+	defer server.Close()
+
+	state := &healthState{
+		client: &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()},
+		zone:   "example.test",
+	}
+	if err := state.check(context.Background()); err != nil {
+		t.Fatalf("first check: %v", err)
+	}
+	if err := state.check(context.Background()); err != nil {
+		t.Fatalf("second check: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected 1 upstream call, got %d", calls)
+	}
+}
