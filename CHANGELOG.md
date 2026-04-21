@@ -2,13 +2,24 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-04-21
+
 ### Added
-- automatic Hetzner DNS zone detection from the challenge FQDN when neither `config.zone` nor `HETZNER_DNS_ZONE` is set
-- longest-suffix zone matching to handle overlapping zones such as `sub.example.com` and `example.com`
+- automatic Hetzner DNS zone detection from the challenge FQDN, including longest-suffix matching for overlapping zones such as `sub.example.com` and `example.com`
+- structured JSON logging via `log/slog`
+- optional OpenTelemetry tracing export via OTLP/gRPC
+- cert-manager DNS01 provider conformance e2e test suite, plus a local `scripts/run-conformance.sh` helper
+- an additional `ClusterIssuer` example for deployments that prefer an explicit `zone` in solver configuration
 
 ### Changed
-- explicit `config.zone` and `HETZNER_DNS_ZONE` overrides continue to work unchanged and take precedence over auto-detection
-- security documentation now calls out the broader token blast radius when auto-detection is enabled
+- DNS TXT record presentation and cleanup now use Hetzner DNS action endpoints
+- default deployment examples and manifests now assume zone auto-detection, with a separate explicit-zone example for pinned-zone setups
+- README quick start and deployment documentation were reorganized and expanded
+- CI and container publishing workflows were streamlined
+- the build now targets Go 1.26
+
+### Security
+- documentation now calls out the broader token blast radius when auto-detection is enabled
 
 ## [1.0.0] - 2026-04-20
 
