@@ -202,7 +202,8 @@ spec:
             - name: HETZNER_DNS_API_BASE_URL
               value: https://api.hetzner.cloud/v1
             # Optional: uncomment to enable upstream-backed health checks and a
-            # default zone when solver config omits `zone`.
+            # cluster-wide explicit default zone. If left unset, challenge
+            # handling can still auto-detect zones from the challenge FQDN.
             # - name: HETZNER_DNS_ZONE
             #   value: example.com
           ports:

@@ -1,10 +1,12 @@
-# Example ClusterIssuer. Review and customize before applying in production.
-# This example relies on automatic zone detection and therefore works without
-# `config.zone` and without `HETZNER_DNS_ZONE`.
+# Example ClusterIssuer with an explicit zone override. Review and customize before
+# applying in production.
+#
+# Use this variant if you want to constrain challenge operations to a specific
+# Hetzner DNS zone instead of relying on automatic zone detection.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: letsencrypt-hetzner
+  name: letsencrypt-hetzner-explicit-zone
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
     app.kubernetes.io/version: 1.0.0
@@ -13,10 +15,11 @@ spec:
     server: https://acme-v02.api.letsencrypt.org/directory
     email: you@example.com
     privateKeySecretRef:
-      name: letsencrypt-hetzner
+      name: letsencrypt-hetzner-explicit-zone
     solvers:
       - dns01:
           webhook:
             groupName: acme.mattwend.github.io
             solverName: hetzner
-            config: {}
+            config:
+              zone: example.com

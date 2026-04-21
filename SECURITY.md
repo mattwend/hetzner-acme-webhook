@@ -3,7 +3,7 @@
 ## Supported use
 
 This project is a minimal cert-manager DNS01 webhook for Hetzner DNS.
-It is intended to run inside Kubernetes with a narrowly scoped Hetzner API token and explicit zone configuration.
+It is intended to run inside Kubernetes with a narrowly scoped Hetzner API token. Explicit zone configuration is still supported, but the webhook can also auto-detect zones from challenge FQDNs.
 
 ## Reporting a vulnerability
 
@@ -21,7 +21,7 @@ When reporting, include:
 
 Primary assets:
 - Hetzner DNS API token
-- control of TXT records under the configured DNS zone
+- control of TXT records under the configured DNS zone, or across all token-visible zones when auto-detection is used
 - certificate issuance flow that depends on `_acme-challenge` records
 
 Expected trust boundaries:
@@ -31,6 +31,7 @@ Expected trust boundaries:
 
 Main threats considered:
 - challenge input causing DNS changes outside the intended zone
+- auto-detection selecting any zone visible to the configured token when no explicit zone is set
 - path or API endpoint injection through record names
 - accidental deletion of unrelated ACME challenge records
 - excessive health probing causing unnecessary upstream API traffic
@@ -41,7 +42,8 @@ Main threats considered:
 
 The webhook currently:
 - supports per-solver zone configuration and optional `HETZNER_DNS_ZONE` fallback
-- rejects FQDNs outside the configured zone
+- auto-detects the matching zone by longest FQDN suffix when no explicit zone is configured
+- rejects FQDNs outside the selected zone
 - validates record names before DNS mutations
 - URL-escapes record names in delete paths
 - disables startup garbage collection of challenge records
@@ -54,7 +56,8 @@ The webhook currently:
 
 Recommended controls:
 - prefer mounting the Hetzner token as a file instead of an environment variable
-- use a dedicated Hetzner token with the minimum permissions needed for the target zone
+- use a dedicated Hetzner token with the minimum permissions needed for the target zone or set of zones
+- prefer explicit `config.zone` or `HETZNER_DNS_ZONE` when you want to constrain challenge operations to a specific zone
 - restrict network access to the webhook where practical
 - expose health endpoints only inside the cluster
 - pin container images by digest
@@ -64,7 +67,8 @@ Recommended controls:
 ## Operational notes
 
 Blast radius:
-- limited to TXT record management in the configured zone, assuming the Hetzner token is scoped appropriately
+- with explicit `config.zone` or `HETZNER_DNS_ZONE`, limited to TXT record management in the selected zone, assuming the Hetzner token is scoped appropriately
+- with auto-detection, expands to TXT record management in any Hetzner zone visible to the configured token
 
 External dependencies:
 - Hetzner Cloud DNS API at `https://api.hetzner.cloud/v1`
@@ -73,5 +77,5 @@ External dependencies:
 Recovery:
 - revoke and replace the Hetzner token
 - redeploy the webhook with the new secret
-- inspect and repair `_acme-challenge` TXT records in the configured zone
+- inspect and repair `_acme-challenge` TXT records in the affected zone or zones
 - re-trigger failed certificate issuances after DNS state is corrected

@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- automatic Hetzner DNS zone detection from the challenge FQDN when neither `config.zone` nor `HETZNER_DNS_ZONE` is set
+- longest-suffix zone matching to handle overlapping zones such as `sub.example.com` and `example.com`
+
+### Changed
+- explicit `config.zone` and `HETZNER_DNS_ZONE` overrides continue to work unchanged and take precedence over auto-detection
+- security documentation now calls out the broader token blast radius when auto-detection is enabled
+
 ## [1.0.0] - 2026-04-20
 
 Initial stable release.
