@@ -2,116 +2,148 @@
 
 Minimal [cert-manager](https://cert-manager.io/) DNS01 webhook for Hetzner DNS.
 
-> If you came here by accident and just want a maintained Hetzner webhook for cert-manager, you probably want [`hetzner/cert-manager-webhook-hetzner`](https://github.com/hetzner/cert-manager-webhook-hetzner) instead. This repository is intentionally small and opinionated. If you want to understand why it exists and how it differs, see [How this differs from the maintained Hetzner webhook](#how-this-differs-from-the-maintained-hetzner-webhook).
+> If you just want a maintained Hetzner webhook for cert-manager, you probably want [`hetzner/cert-manager-webhook-hetzner`](https://github.com/hetzner/cert-manager-webhook-hetzner) instead. This repository is intentionally small and opinionated — see [How this differs](#how-this-differs-from-the-maintained-hetzner-webhook) for details.
 
-## Webhook identity
+## Quick start
 
-- `groupName`: `acme.mattwend.github.io`
-- `solverName`: `hetzner`
-- image: `ghcr.io/mattwend/hetzner-acme-webhook`
-- webhook HTTPS: service `:443` -> container `:8443`
-- health endpoints: `:8080/healthz` and `:8080/readyz`
+Prerequisites: cert-manager `v1.0+` with cainjector enabled, installed in the `cert-manager` namespace.
+
+1. **Edit the Secret** in [`deploy/manifests.yaml`](deploy/manifests.yaml) — replace `REPLACE_WITH_HETZNER_DNS_API_TOKEN` with your [Hetzner DNS API token](https://docs.hetzner.com/cloud/api/getting-started/generating-api-token).
+
+2. **Apply the install manifest:**
+
+   ```bash
+   kubectl apply -f deploy/manifests.yaml
+   ```
+
+3. **Create a ClusterIssuer.** Pick one of the examples, customize `email` and (if applicable) `zone`, and apply:
+
+   ```bash
+   # Auto-detect zone from challenge FQDN (simplest):
+   kubectl apply -f deploy/clusterissuer-example.yaml
+
+   # Or lock to a specific zone:
+   kubectl apply -f deploy/clusterissuer-example-explicit-zone.yaml
+   ```
+
+4. **Request a certificate** as described in the cert-manager [usage docs](https://cert-manager.io/docs/usage/).
+
+That's it. The manifest sets up the Deployment, Service, TLS (via self-signed CA), RBAC, and `APIService` registration.
 
 ## Configuration
 
-Environment variables:
+### Token
 
-- `HETZNER_DNS_API_TOKEN` — optional if token file exists; token file is preferred when both are set
-- `HETZNER_DNS_API_BASE_URL` — optional, defaults to `https://api.hetzner.cloud/v1`
-- `HETZNER_DNS_ZONE` — optional explicit default Hetzner DNS zone, for example `example.com`; used when solver config omits `zone`, and also enables upstream-backed health checks. If this env var is unset and solver config omits `zone`, the webhook auto-detects the matching zone from the challenge FQDN by querying Hetzner DNS. The install manifest leaves this unset by default.
+The webhook reads the Hetzner DNS API token from the file `/var/run/secrets/hetzner-dns/token` (mounted from a Kubernetes Secret in the install manifest). It falls back to the `HETZNER_DNS_API_TOKEN` environment variable when the file is absent or empty.
 
-Webhook prefers reading the token from `/var/run/secrets/hetzner-dns/token` and falls back to `HETZNER_DNS_API_TOKEN` when the file is absent or empty.
+### Environment variables
 
-The webhook needs a DNS zone because Hetzner's API is zone-based. For example, to solve challenges for `app.example.com`, use the zone `example.com` if that is the zone hosted in Hetzner DNS.
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `HETZNER_DNS_API_TOKEN` | only if token file is absent | — | Hetzner DNS API token (token file is preferred) |
+| `HETZNER_DNS_API_BASE_URL` | no | `https://api.hetzner.cloud/v1` | API base URL |
+| `HETZNER_DNS_ZONE` | no | — | Default zone (e.g. `example.com`); enables upstream-backed health checks |
 
-Solver config:
+### Solver config
 
-```json
-{
-  "zone": "example.com"
-}
+Passed via the `config` field on the Issuer/ClusterIssuer webhook solver:
+
+```yaml
+solvers:
+  - dns01:
+      webhook:
+        groupName: acme.mattwend.github.io
+        solverName: hetzner
+        config:
+          zone: example.com   # optional
 ```
 
-`zone` is an optional explicit Hetzner DNS zone override for where the ACME TXT record should be created.
+| Field | Required | Description |
+|---|---|---|
+| `zone` | no | Explicit Hetzner DNS zone for this issuer |
 
-Zone resolution order during challenge handling:
-1. `config.zone`
-2. `HETZNER_DNS_ZONE`
-3. automatic detection from the challenge FQDN via `GET /zones`
+### Zone resolution order
 
-Auto-detection matches the challenge FQDN against accessible Hetzner zone names by longest suffix. For example, `_acme-challenge.test.sub.example.com` matches `sub.example.com` before `example.com`.
+When handling a challenge, the webhook resolves the target zone in this order:
 
-If no accessible zone matches, challenge handling fails, but the process still starts and exposes local health endpoints.
+1. `config.zone` (per-issuer override)
+2. `HETZNER_DNS_ZONE` (cluster-wide default)
+3. Automatic detection from the challenge FQDN via `GET /zones` (longest suffix match)
 
-## Deploy
+Auto-detection matches the challenge FQDN against accessible Hetzner zone names. For example, `_acme-challenge.test.sub.example.com` matches `sub.example.com` before `example.com`.
 
-This repository provides:
-- [`deploy/manifests.yaml`](deploy/manifests.yaml) — complete install manifest for the webhook
-- [`deploy/clusterissuer-example.yaml`](deploy/clusterissuer-example.yaml) — example `ClusterIssuer` using automatic zone detection
-- [`deploy/clusterissuer-example-explicit-zone.yaml`](deploy/clusterissuer-example-explicit-zone.yaml) — example `ClusterIssuer` with an explicit zone override
+## Webhook identity
 
-The install manifest sets up the deployment, service, TLS, RBAC, and `APIService` registration required by cert-manager. It also applies a restrictive pod security context with `RuntimeDefault` seccomp.
+| Property | Value |
+|---|---|
+| `groupName` | `acme.mattwend.github.io` |
+| `solverName` | `hetzner` |
+| Image | `ghcr.io/mattwend/hetzner-acme-webhook` |
+| Webhook HTTPS | Service `:443` → container `:8443` |
+| Health endpoints | `:8080/healthz` and `:8080/readyz` |
 
-Prerequisites:
-- cert-manager `v1.0+` is already installed in the `cert-manager` namespace
-- cert-manager's controller ServiceAccount is named `cert-manager`
-- cert-manager cainjector is enabled so the `APIService` CA bundle is injected
-- the published image tag `ghcr.io/mattwend/hetzner-acme-webhook:v1.0.0` exists
+## Deploy details
 
-Before applying the install manifest, replace the placeholder token. The install manifest intentionally does not set `HETZNER_DNS_ZONE`; you can either keep `zone` in your solver config, set a cluster-wide default zone in the Deployment for upstream-backed health checks, or rely on automatic zone detection during challenge handling.
+The install manifest in [`deploy/manifests.yaml`](deploy/manifests.yaml) includes:
 
-```bash
-kubectl apply -f deploy/manifests.yaml
-```
+- **Namespace** — uses `cert-manager`
+- **Secret** — holds the Hetzner DNS API token
+- **ServiceAccount + RBAC** — least-privilege access for the webhook and cert-manager
+- **Self-signed CA + TLS Certificate** — issued by cert-manager itself; CA bundle injected into the `APIService` via cainjector
+- **Deployment** — single replica with a restrictive security context (`readOnlyRootFilesystem`, `RuntimeDefault` seccomp, no privilege escalation)
+- **Service + APIService** — registers the webhook with the Kubernetes API aggregation layer
 
-If you want to use one of the example issuers, customize it first:
-- [`deploy/clusterissuer-example.yaml`](deploy/clusterissuer-example.yaml) uses automatic zone detection with `config: {}`
-- [`deploy/clusterissuer-example-explicit-zone.yaml`](deploy/clusterissuer-example-explicit-zone.yaml) uses `config.zone` to lock the solver to a specific zone
+Optional tuning:
+- **Scale replicas** and add affinity/topology constraints for higher availability
+- **Set `HETZNER_DNS_ZONE`** on the Deployment to enable upstream-backed health checks
+- **Adjust resource requests/limits** if your workload differs
 
-Update at least:
+### Customizing the ClusterIssuer examples
+
+Before applying an example, update at least:
 - `metadata.name`
 - `spec.acme.email`
 - `spec.acme.privateKeySecretRef.name`
-- `spec.acme.solvers[]...config.zone` in the explicit-zone variant
+- `spec.acme.solvers[]...config.zone` (explicit-zone variant only)
 
-For higher availability, you can also scale the Deployment above one replica and add your preferred affinity/topology settings.
+## Troubleshooting
 
-Then apply the variant you want:
-
+**Certificate stuck in pending state:**
 ```bash
-kubectl apply -f deploy/clusterissuer-example.yaml
-# or
-kubectl apply -f deploy/clusterissuer-example-explicit-zone.yaml
+kubectl describe certificate <name>
+kubectl describe order <name>
+kubectl describe challenge <name>
+kubectl logs -n cert-manager deploy/hetzner-acme-webhook
 ```
+
+**Webhook pod not ready:**
+- Check that cert-manager and cainjector are running — the webhook TLS certificate is issued by cert-manager itself
+- If `HETZNER_DNS_ZONE` is set, the health check verifies the zone is reachable; an invalid zone or token will keep the pod unready
+
+**"no matching zone found" error:**
+- The API token must have access to the zone that contains the domain being validated
+- Check that the zone exists in your Hetzner DNS console and matches the certificate's domain
 
 ## How this differs from the maintained Hetzner webhook
 
 This project exists because I wanted a webhook that is easy to read, easy to audit, and easy to adapt for a small single-tenant setup.
 
-In short:
+| | This webhook | [`hetzner/cert-manager-webhook-hetzner`](https://github.com/hetzner/cert-manager-webhook-hetzner) |
+|---|---|---|
+| **Target audience** | Single-tenant, self-hosted | General purpose, officially maintained |
+| **Zone detection** | Auto-detect, env var, or per-issuer config | Relies on cert-manager's `ResolvedZone` |
+| **Token management** | Single token via file/env | Per-issuer tokens via K8s Secret references |
+| **API client** | Raw HTTP (no SDK dependency) | `hcloud-go` SDK with Prometheus metrics |
+| **Packaging** | Static `kubectl apply` manifest | Helm chart |
+| **Codebase** | ~700 lines of Go | Larger, with more abstractions |
 
-- this repository favors a **small codebase** over a broad feature set
-- it is optimized for **simple self-hosted deployments** rather than being the default recommendation for everyone
-- it includes **automatic zone detection** from the challenge FQDN when no explicit zone is configured
-- it intentionally keeps dependencies and moving parts limited where practical
-
-Compared with [`hetzner/cert-manager-webhook-hetzner`](https://github.com/hetzner/cert-manager-webhook-hetzner):
-
-- the maintained Hetzner webhook is the better default choice if you want the **officially maintained** implementation
-- this webhook is more opinionated and currently targets a narrower operational model
-- this webhook prioritizes **minimalism and local readability** over feature breadth and optimization work such as extra caching layers
-- this webhook may diverge in behavior and implementation details when that keeps the design simpler for this repository's use case
-
-When to choose which:
-
-- choose the maintained Hetzner webhook if you want the safer default, broader upstream attention, or you expect higher scale / more demanding operational requirements
-- choose this repository if you specifically want this project's behavior, deployment shape, or a smaller codebase that is easy to inspect and modify
+**When to choose which:**
+- Choose the maintained Hetzner webhook for the safer default, broader upstream attention, or multi-tenant needs
+- Choose this webhook if you want a smaller codebase that is easy to inspect and modify, or you specifically want automatic zone detection
 
 This project is not trying to replace the maintained Hetzner webhook. It is a focused alternative.
 
 ## Development
-
-For local verification:
 
 ```bash
 go test ./...
