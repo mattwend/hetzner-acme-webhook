@@ -2,6 +2,8 @@
 
 Minimal [cert-manager](https://cert-manager.io/) DNS01 webhook for Hetzner DNS.
 
+> If you came here by accident and just want a maintained Hetzner webhook for cert-manager, you probably want [`hetzner/cert-manager-webhook-hetzner`](https://github.com/hetzner/cert-manager-webhook-hetzner) instead. This repository is intentionally small and opinionated. If you want to understand why it exists and how it differs, see [How this differs from the maintained Hetzner webhook](#how-this-differs-from-the-maintained-hetzner-webhook).
+
 ## Webhook identity
 
 - `groupName`: `acme.mattwend.github.io`
@@ -81,6 +83,31 @@ kubectl apply -f deploy/clusterissuer-example.yaml
 # or
 kubectl apply -f deploy/clusterissuer-example-explicit-zone.yaml
 ```
+
+## How this differs from the maintained Hetzner webhook
+
+This project exists because I wanted a webhook that is easy to read, easy to audit, and easy to adapt for a small single-tenant setup.
+
+In short:
+
+- this repository favors a **small codebase** over a broad feature set
+- it is optimized for **simple self-hosted deployments** rather than being the default recommendation for everyone
+- it includes **automatic zone detection** from the challenge FQDN when no explicit zone is configured
+- it intentionally keeps dependencies and moving parts limited where practical
+
+Compared with [`hetzner/cert-manager-webhook-hetzner`](https://github.com/hetzner/cert-manager-webhook-hetzner):
+
+- the maintained Hetzner webhook is the better default choice if you want the **officially maintained** implementation
+- this webhook is more opinionated and currently targets a narrower operational model
+- this webhook prioritizes **minimalism and local readability** over feature breadth and optimization work such as extra caching layers
+- this webhook may diverge in behavior and implementation details when that keeps the design simpler for this repository's use case
+
+When to choose which:
+
+- choose the maintained Hetzner webhook if you want the safer default, broader upstream attention, or you expect higher scale / more demanding operational requirements
+- choose this repository if you specifically want this project's behavior, deployment shape, or a smaller codebase that is easy to inspect and modify
+
+This project is not trying to replace the maintained Hetzner webhook. It is a focused alternative.
 
 ## Development
 
