@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,22 +21,30 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"k8s.io/klog/v2"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
 	defaultAPIBase     = "https://api.hetzner.cloud/v1"
 	presentTTL         = 60
 	maxAPIResponseSize = 1 << 20
+	tracerName         = "github.com/mattwend/hetzner-acme-webhook"
 )
 
-var tokenFilePath = "/var/run/secrets/hetzner-dns/token"
+var (
+	tokenFilePath = "/var/run/secrets/hetzner-dns/token"
+	tracer        = otel.Tracer(tracerName)
+)
 
 type DNSClient struct {
 	baseURL      string
 	httpClient   *http.Client
 	token        string
 	pollInterval time.Duration
+	logger       *slog.Logger
 }
 
 type zonesResponse struct {
@@ -69,7 +78,7 @@ type httpError struct {
 
 func (e *httpError) Error() string { return fmt.Sprintf("http %d: %s", e.StatusCode, e.Body) }
 
-func NewDNSClient() (*DNSClient, error) {
+func NewDNSClient(logger *slog.Logger) (*DNSClient, error) {
 	var token string
 	data, err := os.ReadFile(tokenFilePath)
 	if err == nil {
@@ -87,10 +96,14 @@ func NewDNSClient() (*DNSClient, error) {
 	if baseURL == "" {
 		baseURL = defaultAPIBase
 	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &DNSClient{
 		baseURL:      baseURL,
 		token:        token,
 		pollInterval: time.Second,
+		logger:       logger,
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
 			Transport: &http.Transport{
@@ -101,7 +114,16 @@ func NewDNSClient() (*DNSClient, error) {
 }
 
 func (c *DNSClient) ping(ctx context.Context, zoneName string) error {
+	ctx, span := tracer.Start(ctx, "dns.ping", trace.WithAttributes(
+		attribute.String("dns.zone", zoneName),
+	))
+	defer span.End()
+
 	_, err := c.zoneID(ctx, zoneName)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
 	return err
 }
 
@@ -145,18 +167,24 @@ func (c *DNSClient) getJSONResponse(ctx context.Context, path string, out any) (
 }
 
 func (c *DNSClient) listZones(ctx context.Context) ([]zone, error) {
+	ctx, span := tracer.Start(ctx, "dns.list_zones")
+	defer span.End()
+
 	path := "/zones"
 	all := make([]zone, 0)
 	for {
 		var res zonesResponse
 		resp, err := c.getJSONResponse(ctx, path, &res)
 		if err != nil {
-			return nil, err
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return nil, stabilizeHTTPError(err)
 		}
 		all = append(all, res.Zones...)
 		next := parseNextPage(resp.Header.Get("Link"))
 		resp.Body.Close()
 		if next == "" {
+			span.SetAttributes(attribute.Int("dns.zone_count", len(all)))
 			return all, nil
 		}
 		path = next
@@ -238,7 +266,15 @@ func formatTXTRecord(value string) string {
 }
 
 func (c *DNSClient) presentZone(ctx context.Context, z zone, recordName, key string) error {
+	ctx, span := tracer.Start(ctx, "dns.present", trace.WithAttributes(
+		attribute.String("dns.zone", z.Name),
+		attribute.String("dns.record_name", recordName),
+	))
+	defer span.End()
+
 	if err := validateRecordName(recordName); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	zoneID := z.ID
@@ -246,6 +282,8 @@ func (c *DNSClient) presentZone(ctx context.Context, z zone, recordName, key str
 		var err error
 		zoneID, err = c.zoneID(ctx, z.Name)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return err
 		}
 	}
@@ -255,12 +293,29 @@ func (c *DNSClient) presentZone(ctx context.Context, z zone, recordName, key str
 	}
 	formatted := formatTXTRecord(key)
 	body := map[string]any{"records": []map[string]string{{"value": formatted}}, "ttl": presentTTL}
-	klog.Infof("present TXT record zone=%s name=%s", zoneName, recordName)
-	return c.postAction(ctx, "/zones/"+zoneID+"/rrsets/"+url.PathEscape(recordName)+"/TXT/actions/add_records", body)
+
+	c.logger.InfoContext(ctx, "presenting TXT record",
+		slog.String("zone", zoneName),
+		slog.String("record", recordName),
+	)
+	if err := c.postAction(ctx, "/zones/"+zoneID+"/rrsets/"+url.PathEscape(recordName)+"/TXT/actions/add_records", body); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	return nil
 }
 
 func (c *DNSClient) cleanupZone(ctx context.Context, z zone, recordName, key string) error {
+	ctx, span := tracer.Start(ctx, "dns.cleanup", trace.WithAttributes(
+		attribute.String("dns.zone", z.Name),
+		attribute.String("dns.record_name", recordName),
+	))
+	defer span.End()
+
 	if err := validateRecordName(recordName); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	zoneID := z.ID
@@ -268,6 +323,8 @@ func (c *DNSClient) cleanupZone(ctx context.Context, z zone, recordName, key str
 		var err error
 		zoneID, err = c.zoneID(ctx, z.Name)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return err
 		}
 	}
@@ -277,12 +334,21 @@ func (c *DNSClient) cleanupZone(ctx context.Context, z zone, recordName, key str
 	}
 	formatted := formatTXTRecord(key)
 	body := map[string]any{"records": []map[string]string{{"value": formatted}}}
-	klog.Infof("cleanup TXT record zone=%s name=%s", zoneName, recordName)
+
+	c.logger.InfoContext(ctx, "cleaning up TXT record",
+		slog.String("zone", zoneName),
+		slog.String("record", recordName),
+	)
 	if err := c.postAction(ctx, "/zones/"+zoneID+"/rrsets/"+url.PathEscape(recordName)+"/TXT/actions/remove_records", body); err != nil {
-		var httpErr *httpError
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
+		if IsNotFound(err) {
+			c.logger.InfoContext(ctx, "record already deleted",
+				slog.String("zone", zoneName),
+				slog.String("record", recordName),
+			)
 			return nil
 		}
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	return nil
@@ -306,6 +372,11 @@ func formatActionError(action actionStatus) error {
 }
 
 func (c *DNSClient) postAction(ctx context.Context, path string, body any) error {
+	ctx, span := tracer.Start(ctx, "dns.post_action", trace.WithAttributes(
+		attribute.String("dns.api_path", path),
+	))
+	defer span.End()
+
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -313,6 +384,9 @@ func (c *DNSClient) postAction(ctx context.Context, path string, body any) error
 	var res actionResponse
 	resp, err := c.do(ctx, http.MethodPost, path, bytes.NewReader(payload))
 	if err != nil {
+		err = stabilizeHTTPError(err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	defer resp.Body.Close()
@@ -320,17 +394,28 @@ func (c *DNSClient) postAction(ctx context.Context, path string, body any) error
 		return err
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
+
+	span.SetAttributes(attribute.Int64("dns.action_id", res.Action.ID))
+
 	switch res.Action.Status {
 	case "success":
 		return nil
 	case "error":
-		return formatActionError(res.Action)
+		err := formatActionError(res.Action)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
 	default:
 		return c.pollAction(ctx, res.Action.ID)
 	}
 }
 
 func (c *DNSClient) pollAction(ctx context.Context, actionID int64) error {
+	ctx, span := tracer.Start(ctx, "dns.poll_action", trace.WithAttributes(
+		attribute.Int64("dns.action_id", actionID),
+	))
+	defer span.End()
+
 	pollInterval := c.pollInterval
 	if pollInterval <= 0 {
 		pollInterval = time.Second
@@ -338,13 +423,19 @@ func (c *DNSClient) pollAction(ctx context.Context, actionID int64) error {
 	for {
 		var res actionResponse
 		if err := c.getJSON(ctx, "/actions/"+strconv.FormatInt(actionID, 10), &res); err != nil {
+			err = stabilizeHTTPError(err)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return err
 		}
 		switch res.Action.Status {
 		case "success":
 			return nil
 		case "error":
-			return formatActionError(res.Action)
+			err := formatActionError(res.Action)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return err
 		}
 		timer := time.NewTimer(pollInterval)
 		select {

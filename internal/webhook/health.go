@@ -5,12 +5,12 @@ package webhook
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
-
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -23,6 +23,7 @@ type healthState struct {
 	client  *DNSClient
 	zone    string
 	enabled bool
+	logger  *slog.Logger
 
 	mu           sync.Mutex
 	checking     bool
@@ -31,8 +32,13 @@ type healthState struct {
 	lastCheckDur time.Duration
 }
 
-func ServeHealth(client *DNSClient, zone string) {
-	state := &healthState{client: client, zone: zone, enabled: strings.TrimSpace(zone) != ""}
+func ServeHealth(logger *slog.Logger, client *DNSClient, zone string) {
+	state := &healthState{
+		client:  client,
+		zone:    zone,
+		enabled: strings.TrimSpace(zone) != "",
+		logger:  logger,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := state.check(r.Context()); err != nil {
@@ -50,8 +56,10 @@ func ServeHealth(client *DNSClient, zone string) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready"))
 	})
+	logger.Info("starting health server", slog.String("addr", healthListenAddr))
 	if err := http.ListenAndServe(healthListenAddr, mux); err != nil {
-		klog.Fatalf("health server: %v", err)
+		logger.Error("health server failed", slog.String("error", err.Error()))
+		panic(fmt.Sprintf("health server: %v", err))
 	}
 }
 
@@ -95,7 +103,11 @@ func (s *healthState) check(parent context.Context) error {
 	s.mu.Unlock()
 
 	if err != nil {
-		klog.Warningf("health check failed zone=%s duration=%s: %v", s.zone, dur, err)
+		s.logger.Warn("health check failed",
+			slog.String("zone", s.zone),
+			slog.Duration("duration", dur),
+			slog.String("error", err.Error()),
+		)
 	}
 	return err
 }

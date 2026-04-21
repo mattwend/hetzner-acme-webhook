@@ -6,6 +6,7 @@ package webhook
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,8 @@ import (
 	acmev1 "github.com/cert-manager/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
+
+var testLogger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 func TestFQDNToRelative(t *testing.T) {
 	got, err := fqdnToRelative("_acme-challenge.test.example.test.", "example.test")
@@ -78,7 +81,7 @@ func TestPresentAndCleanup(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), logger: testLogger}
 	ctx := context.Background()
 	z := zone{Name: "example.test"}
 	if err := c.presentZone(ctx, z, "_acme-challenge.test", "token-value"); err != nil {
@@ -123,7 +126,7 @@ func TestCleanupUsesCorrectPath(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), logger: testLogger}
 	if err := c.cleanupZone(context.Background(), zone{Name: "example.test"}, "_acme-challenge.test", "token-value"); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
@@ -159,7 +162,7 @@ func TestPollActionSuccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), pollInterval: time.Millisecond}
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), pollInterval: time.Millisecond, logger: testLogger}
 	if err := c.pollAction(context.Background(), 1); err != nil {
 		t.Fatalf("pollAction: %v", err)
 	}
@@ -174,7 +177,7 @@ func TestPollActionError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), pollInterval: time.Millisecond}
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), pollInterval: time.Millisecond, logger: testLogger}
 	err := c.pollAction(context.Background(), 1)
 	if err == nil || !strings.Contains(err.Error(), "fail") {
 		t.Fatalf("unexpected error: %v", err)
@@ -196,7 +199,7 @@ func TestPollActionWaitsForCompletion(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), pollInterval: time.Millisecond}
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), pollInterval: time.Millisecond, logger: testLogger}
 	if err := c.pollAction(context.Background(), 1); err != nil {
 		t.Fatalf("pollAction: %v", err)
 	}
@@ -218,7 +221,7 @@ func TestCleanup404IsNotError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), logger: testLogger}
 	if err := c.cleanupZone(context.Background(), zone{Name: "example.test"}, "_acme-challenge.test", "token-value"); err != nil {
 		t.Fatalf("cleanupZone: %v", err)
 	}
@@ -266,14 +269,14 @@ func TestZoneNotFound(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{}})
 	}))
 	defer server.Close()
-	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), logger: testLogger}
 	if _, err := c.zoneID(context.Background(), "missing.example"); err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestResolveZonePrefersConfigWithoutClientLookup(t *testing.T) {
-	s := &Solver{}
+	s := &Solver{logger: testLogger}
 	ch := &acmev1.ChallengeRequest{ResolvedFQDN: "_acme-challenge.test.cfg.example.", Config: &apiextensionsv1.JSON{Raw: []byte(`{"zone":"cfg.example"}`)}}
 	z, err := s.resolveZone(context.Background(), ch)
 	if err != nil {
@@ -286,7 +289,7 @@ func TestResolveZonePrefersConfigWithoutClientLookup(t *testing.T) {
 
 func TestResolveZonePrefersEnvWithoutClientLookup(t *testing.T) {
 	t.Setenv("HETZNER_DNS_ZONE", "env.example")
-	s := &Solver{}
+	s := &Solver{logger: testLogger}
 	ch := &acmev1.ChallengeRequest{ResolvedFQDN: "_acme-challenge.test.env.example."}
 	z, err := s.resolveZone(context.Background(), ch)
 	if err != nil {
@@ -307,7 +310,7 @@ func TestResolveZoneAutoDetect(t *testing.T) {
 	}))
 	defer server.Close()
 
-	s := &Solver{client: &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}}
+	s := &Solver{client: &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), logger: testLogger}, logger: testLogger}
 	ch := &acmev1.ChallengeRequest{ResolvedFQDN: "_acme-challenge.test.sub.example.com."}
 	z, err := s.resolveZone(context.Background(), ch)
 	if err != nil {
@@ -328,7 +331,7 @@ func TestResolveZoneAutoDetectNoMatchingZones(t *testing.T) {
 	}))
 	defer server.Close()
 
-	s := &Solver{client: &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}}
+	s := &Solver{client: &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), logger: testLogger}, logger: testLogger}
 	ch := &acmev1.ChallengeRequest{ResolvedFQDN: "_acme-challenge.test.sub.example.com."}
 	if _, err := s.resolveZone(context.Background(), ch); err == nil {
 		t.Fatal("expected error")
@@ -358,7 +361,7 @@ func TestListZonesFollowsPagination(t *testing.T) {
 	serverURL = server.URL
 	defer server.Close()
 
-	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), logger: testLogger}
 	zones, err := c.listZones(context.Background())
 	if err != nil {
 		t.Fatalf("listZones: %v", err)
@@ -386,7 +389,7 @@ func TestPresentWithExplicitZoneResolvesIDBeforeMutation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	s := &Solver{client: &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}}
+	s := &Solver{client: &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), logger: testLogger}, logger: testLogger}
 	ch := &acmev1.ChallengeRequest{ResolvedFQDN: "_acme-challenge.test.example.test.", Key: "token-value", Config: &apiextensionsv1.JSON{Raw: []byte(`{"zone":"example.test"}`)}}
 	if err := s.Present(ch); err != nil {
 		t.Fatalf("present: %v", err)
@@ -407,7 +410,7 @@ func TestNewDNSClientPrefersTokenFileOverEnv(t *testing.T) {
 		t.Fatalf("write token file: %v", err)
 	}
 
-	c, err := NewDNSClient()
+	c, err := NewDNSClient(testLogger)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
@@ -425,7 +428,7 @@ func TestHealthCheckCachesResult(t *testing.T) {
 	defer server.Close()
 
 	state := &healthState{
-		client:  &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()},
+		client:  &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), logger: testLogger},
 		zone:    "example.test",
 		enabled: true,
 	}
