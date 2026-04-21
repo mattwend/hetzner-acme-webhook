@@ -2,53 +2,53 @@
 
 Minimal [cert-manager](https://cert-manager.io/) DNS01 webhook for Hetzner DNS.
 
-> If you just want a maintained Hetzner webhook for cert-manager, you probably want [`hetzner/cert-manager-webhook-hetzner`](https://github.com/hetzner/cert-manager-webhook-hetzner) instead. This repository is intentionally small and opinionated — see [How this differs](#how-this-differs-from-the-maintained-hetzner-webhook) for details.
+> **Note:** If you want the officially maintained option, see [`hetzner/cert-manager-webhook-hetzner`](https://github.com/hetzner/cert-manager-webhook-hetzner). This project is intentionally small and opinionated — see [how it differs](#how-this-differs-from-the-maintained-hetzner-webhook).
 
 ## Quick start
 
-Prerequisites: cert-manager `v1.0+` with cainjector enabled, installed in the `cert-manager` namespace.
+**Prerequisites:** cert-manager v1.0+ with cainjector enabled, installed in the `cert-manager` namespace.
 
-1. **Edit the Secret** in [`deploy/manifests.yaml`](deploy/manifests.yaml) — replace `REPLACE_WITH_HETZNER_DNS_API_TOKEN` with your [Hetzner DNS API token](https://docs.hetzner.com/cloud/api/getting-started/generating-api-token).
+**1. Add your API token** — edit the Secret in [`deploy/manifests.yaml`](deploy/manifests.yaml), replacing `REPLACE_WITH_HETZNER_DNS_API_TOKEN` with your [Hetzner DNS API token](https://docs.hetzner.com/cloud/api/getting-started/generating-api-token).
 
-2. **Apply the install manifest:**
+**2. Apply the manifest:**
 
-   ```bash
-   kubectl apply -f deploy/manifests.yaml
-   ```
+```bash
+kubectl apply -f deploy/manifests.yaml
+```
 
-3. **Create a ClusterIssuer.** Pick one of the examples, customize `email` and (if applicable) `zone`, and apply:
+**3. Create a ClusterIssuer** — pick an example, set your `email` (and `zone` if needed), then apply:
 
-   ```bash
-   # Auto-detect zone from challenge FQDN (simplest):
-   kubectl apply -f deploy/clusterissuer-example.yaml
+```bash
+# Auto-detect zone from the challenge FQDN (simplest):
+kubectl apply -f deploy/clusterissuer-example.yaml
 
-   # Or lock to a specific zone:
-   kubectl apply -f deploy/clusterissuer-example-explicit-zone.yaml
-   ```
+# Or pin to a specific zone:
+kubectl apply -f deploy/clusterissuer-example-explicit-zone.yaml
+```
 
-4. **Request a certificate** as described in the cert-manager [usage docs](https://cert-manager.io/docs/usage/).
+**4. Request a certificate** following the cert-manager [usage docs](https://cert-manager.io/docs/usage/).
 
-That's it. The manifest sets up the Deployment, Service, TLS (via self-signed CA), RBAC, and `APIService` registration.
+The manifest handles Deployment, Service, TLS (self-signed CA), RBAC, and `APIService` registration — nothing else to configure.
 
 ## Configuration
 
-### Token
+### API token
 
-The webhook reads the Hetzner DNS API token from the file `/var/run/secrets/hetzner-dns/token` (mounted from a Kubernetes Secret in the install manifest). It falls back to the `HETZNER_DNS_API_TOKEN` environment variable when the file is absent or empty.
+The webhook reads the token from `/var/run/secrets/hetzner-dns/token` (mounted from a Secret in the install manifest). It falls back to the `HETZNER_DNS_API_TOKEN` environment variable when the file is absent or empty.
 
 ### Environment variables
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `HETZNER_DNS_API_TOKEN` | only if token file is absent | — | Hetzner DNS API token (token file is preferred) |
-| `HETZNER_DNS_API_BASE_URL` | no | `https://api.hetzner.cloud/v1` | API base URL |
-| `HETZNER_DNS_ZONE` | no | — | Default zone (e.g. `example.com`); enables upstream-backed health checks |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | — | OTLP gRPC endpoint for tracing (e.g. `http://otel-collector:4317`) |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | no | — | OTLP gRPC endpoint for traces only (overrides the generic endpoint) |
+| Variable | Default | Description |
+|---|---|---|
+| `HETZNER_DNS_API_TOKEN` | — | Fallback token (only if token file is absent) |
+| `HETZNER_DNS_API_BASE_URL` | `https://api.hetzner.cloud/v1` | API base URL |
+| `HETZNER_DNS_ZONE` | — | Default zone; also enables upstream-backed health checks |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP/gRPC endpoint for tracing |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | — | Traces-only OTLP/gRPC endpoint (overrides the above) |
 
-### Solver config
+### Per-issuer solver config
 
-Passed via the `config` field on the Issuer/ClusterIssuer webhook solver:
+Set via the `config` field on the Issuer/ClusterIssuer:
 
 ```yaml
 solvers:
@@ -57,62 +57,46 @@ solvers:
         groupName: acme.mattwend.github.io
         solverName: hetzner
         config:
-          zone: example.com   # optional
+          zone: example.com   # optional — overrides env/auto-detection
 ```
-
-| Field | Required | Description |
-|---|---|---|
-| `zone` | no | Explicit Hetzner DNS zone for this issuer |
 
 ### Zone resolution order
 
-When handling a challenge, the webhook resolves the target zone in this order:
+1. **Per-issuer** — `config.zone` on the solver
+2. **Cluster-wide** — `HETZNER_DNS_ZONE` environment variable
+3. **Auto-detection** — longest suffix match against zones returned by `GET /zones`
 
-1. `config.zone` (per-issuer override)
-2. `HETZNER_DNS_ZONE` (cluster-wide default)
-3. Automatic detection from the challenge FQDN via `GET /zones` (longest suffix match)
-
-Auto-detection matches the challenge FQDN against accessible Hetzner zone names. For example, `_acme-challenge.test.sub.example.com` matches `sub.example.com` before `example.com`.
+Auto-detection example: `_acme-challenge.test.sub.example.com` matches `sub.example.com` before `example.com`.
 
 ## Webhook identity
 
 | Property | Value |
 |---|---|
-| `groupName` | `acme.mattwend.github.io` |
-| `solverName` | `hetzner` |
+| Group / Solver | `acme.mattwend.github.io` / `hetzner` |
 | Image | `ghcr.io/mattwend/hetzner-acme-webhook` |
-| Webhook HTTPS | Service `:443` → container `:8443` |
-| Health endpoints | `:8080/healthz` and `:8080/readyz` |
-| Logging | Structured JSON via `log/slog` |
-| Tracing | OpenTelemetry spans via OTLP/gRPC (opt-in) |
+| Ports | HTTPS `:443` → `:8443`, health `:8080` (`/healthz`, `/readyz`) |
+| Observability | Structured JSON (`slog`) + OpenTelemetry OTLP/gRPC (opt-in) |
 
-## Deploy details
+## What the manifest includes
 
-The install manifest in [`deploy/manifests.yaml`](deploy/manifests.yaml) includes:
+[`deploy/manifests.yaml`](deploy/manifests.yaml) creates:
 
-- **Namespace** — uses `cert-manager`
-- **Secret** — holds the Hetzner DNS API token
-- **ServiceAccount + RBAC** — least-privilege access for the webhook and cert-manager
-- **Self-signed CA + TLS Certificate** — issued by cert-manager itself; CA bundle injected into the `APIService` via cainjector
-- **Deployment** — single replica with a restrictive security context (`readOnlyRootFilesystem`, `RuntimeDefault` seccomp, no privilege escalation)
-- **Service + APIService** — registers the webhook with the Kubernetes API aggregation layer
+- **Secret** with the Hetzner DNS API token
+- **ServiceAccount + RBAC** (least-privilege)
+- **Self-signed CA + TLS Certificate** via cert-manager; CA bundle injected by cainjector
+- **Deployment** — single replica, restrictive security context (`readOnlyRootFilesystem`, `RuntimeDefault` seccomp, no privilege escalation)
+- **Service + APIService** for Kubernetes API aggregation
 
-Optional tuning:
-- **Scale replicas** and add affinity/topology constraints for higher availability
-- **Set `HETZNER_DNS_ZONE`** on the Deployment to enable upstream-backed health checks
-- **Adjust resource requests/limits** if your workload differs
+**Optional tuning:** scale replicas / add affinity for HA, set `HETZNER_DNS_ZONE` for upstream health checks, adjust resource requests/limits.
 
 ### Customizing the ClusterIssuer examples
 
-Before applying an example, update at least:
-- `metadata.name`
-- `spec.acme.email`
-- `spec.acme.privateKeySecretRef.name`
-- `spec.acme.solvers[]...config.zone` (explicit-zone variant only)
+Before applying, update: `metadata.name`, `spec.acme.email`, `spec.acme.privateKeySecretRef.name`, and `config.zone` (explicit-zone variant only).
 
 ## Troubleshooting
 
-**Certificate stuck in pending state:**
+**Certificate stuck pending:**
+
 ```bash
 kubectl describe certificate <name>
 kubectl describe order <name>
@@ -121,67 +105,47 @@ kubectl logs -n cert-manager deploy/hetzner-acme-webhook
 ```
 
 **Webhook pod not ready:**
-- Check that cert-manager and cainjector are running — the webhook TLS certificate is issued by cert-manager itself
-- If `HETZNER_DNS_ZONE` is set, the health check verifies the zone is reachable; an invalid zone or token will keep the pod unready
+Check that cert-manager and cainjector are running. If `HETZNER_DNS_ZONE` is set, an invalid zone or token will keep the pod unready.
 
-**"no matching zone found" error:**
-- The API token must have access to the zone that contains the domain being validated
-- Check that the zone exists in your Hetzner DNS console and matches the certificate's domain
+**"no matching zone found":**
+Ensure the API token has access to the zone containing the domain, and that the zone exists in the Hetzner DNS console.
 
 ## How this differs from the maintained Hetzner webhook
 
-This project exists because I wanted a webhook that is easy to read, easy to audit, and easy to adapt for a small single-tenant setup.
+This project exists because I wanted a webhook that is easy to read, audit, and adapt for a small single-tenant setup.
 
 | | This webhook | [`hetzner/cert-manager-webhook-hetzner`](https://github.com/hetzner/cert-manager-webhook-hetzner) |
 |---|---|---|
-| **Target audience** | Single-tenant, self-hosted | General purpose, officially maintained |
-| **Hetzner API** | Hetzner Cloud API (RRSets) | Hetzner Cloud API (RRSets via `hcloud-go`) |
-| **Zone detection** | Auto-detect, env var, or per-issuer config | Relies on cert-manager's `ResolvedZone` |
-| **Token management** | Single token via file/env | Per-issuer tokens via K8s Secret references |
-| **API client** | Raw HTTP (no SDK dependency) | `hcloud-go` SDK with Prometheus metrics |
-| **Observability** | Structured `slog` + OTLP tracing (opt-in) | `slog` + Prometheus metrics |
+| **Audience** | Single-tenant, self-hosted | General purpose, officially maintained |
+| **Zone detection** | Auto-detect, env var, or per-issuer | Relies on cert-manager's `ResolvedZone` |
+| **Token management** | Single token (file or env) | Per-issuer via Secret references |
+| **API client** | Raw HTTP — no SDK | `hcloud-go` SDK |
+| **Observability** | `slog` + OTLP tracing | `slog` + Prometheus metrics |
 | **Packaging** | Static `kubectl apply` manifest | Helm chart |
 | **Codebase** | ~800 lines of Go | ~450 lines + SDK |
 
-**When to choose which:**
-- Choose **`hetzner/cert-manager-webhook-hetzner`** for the safer default, broader upstream attention, or multi-tenant needs
-- Choose **this webhook** if you want a smaller codebase that is easy to inspect and modify, you specifically want automatic zone detection, or you want OTLP tracing
-
-This project is not trying to replace the maintained Hetzner webhook. It is a focused alternative.
+**Choose the official webhook** for the safer default, broader upstream support, or multi-tenant needs. **Choose this one** for a smaller, self-contained codebase with automatic zone detection and OTLP tracing.
 
 ## Development
 
 ```bash
 go test ./...
 go vet ./...
-```
-
-To build a local container image:
-
-```bash
 podman build -t ghcr.io/mattwend/hetzner-acme-webhook:latest .
 ```
 
-### E2e conformance tests
+### E2E conformance tests
 
-Run the cert-manager DNS01 provider conformance suite against a real Hetzner zone:
+Run the cert-manager DNS01 conformance suite against a real Hetzner zone:
 
 ```bash
 export HETZNER_DNS_API_TOKEN="your-token"
-export TEST_ZONE_NAME="example.com."
+export TEST_ZONE_NAME="example.com."   # trailing dot required
 go test -v -count=1 -tags=e2e ./...
 ```
 
-The zone name **must** include a trailing dot. The token must have access to the specified zone.
+## Links
 
-## Security
-
-See [SECURITY.md](SECURITY.md).
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md).
-
-## License
-
-GPL-3.0-only. See [LICENSE](LICENSE).
+- [SECURITY.md](SECURITY.md)
+- [CHANGELOG.md](CHANGELOG.md)
+- [LICENSE](LICENSE) (GPL-3.0-only)
