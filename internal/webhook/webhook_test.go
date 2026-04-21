@@ -353,7 +353,7 @@ func TestListZonesFollowsPagination(t *testing.T) {
 			w.Header().Set("Link", "<"+serverURL+"/zones?page=2>; rel=\"next\"")
 			_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{{"id": "zone-1", "name": "example.com"}}})
 		case "/zones?page=2":
-			_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{{"id": "zone-2", "name": "sub.example.com"}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{{"id": 2, "name": "sub.example.com"}}})
 		default:
 			t.Fatalf("unexpected request: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
 		}
@@ -369,8 +369,21 @@ func TestListZonesFollowsPagination(t *testing.T) {
 	if len(zones) != 2 {
 		t.Fatalf("expected 2 zones, got %d", len(zones))
 	}
-	if zones[1].ID != "zone-2" || zones[1].Name != "sub.example.com" {
+	if zones[0].ID != "zone-1" || zones[0].Name != "example.com" {
+		t.Fatalf("unexpected first zone: %#v", zones[0])
+	}
+	if zones[1].ID != "2" || zones[1].Name != "sub.example.com" {
 		t.Fatalf("unexpected second zone: %#v", zones[1])
+	}
+}
+
+func TestZoneUnmarshalAcceptsNumericID(t *testing.T) {
+	var z zone
+	if err := json.Unmarshal([]byte(`{"id":123,"name":"example.com"}`), &z); err != nil {
+		t.Fatalf("unmarshal zone: %v", err)
+	}
+	if z.ID != "123" || z.Name != "example.com" {
+		t.Fatalf("unexpected zone: %#v", z)
 	}
 }
 

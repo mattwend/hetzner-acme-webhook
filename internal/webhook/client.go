@@ -56,6 +56,31 @@ type zone struct {
 	Name string `json:"name"`
 }
 
+func (z *zone) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID   json.RawMessage `json:"id"`
+		Name string          `json:"name"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	z.Name = raw.Name
+	if len(raw.ID) == 0 || string(raw.ID) == "null" {
+		z.ID = ""
+		return nil
+	}
+	if err := json.Unmarshal(raw.ID, &z.ID); err == nil {
+		return nil
+	}
+	var num json.Number
+	if err := json.Unmarshal(raw.ID, &num); err == nil {
+		z.ID = num.String()
+		return nil
+	}
+	return fmt.Errorf("decode zone id: %s", string(raw.ID))
+}
+
 type actionResponse struct {
 	Action actionStatus `json:"action"`
 }
