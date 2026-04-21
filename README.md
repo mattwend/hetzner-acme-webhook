@@ -43,6 +43,8 @@ The webhook reads the Hetzner DNS API token from the file `/var/run/secrets/hetz
 | `HETZNER_DNS_API_TOKEN` | only if token file is absent | — | Hetzner DNS API token (token file is preferred) |
 | `HETZNER_DNS_API_BASE_URL` | no | `https://api.hetzner.cloud/v1` | API base URL |
 | `HETZNER_DNS_ZONE` | no | — | Default zone (e.g. `example.com`); enables upstream-backed health checks |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | — | OTLP gRPC endpoint for tracing (e.g. `http://otel-collector:4317`) |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | no | — | OTLP gRPC endpoint for traces only (overrides the generic endpoint) |
 
 ### Solver config
 
@@ -81,6 +83,8 @@ Auto-detection matches the challenge FQDN against accessible Hetzner zone names.
 | Image | `ghcr.io/mattwend/hetzner-acme-webhook` |
 | Webhook HTTPS | Service `:443` → container `:8443` |
 | Health endpoints | `:8080/healthz` and `:8080/readyz` |
+| Logging | Structured JSON via `log/slog` |
+| Tracing | OpenTelemetry spans via OTLP/gRPC (opt-in) |
 
 ## Deploy details
 
@@ -131,15 +135,17 @@ This project exists because I wanted a webhook that is easy to read, easy to aud
 | | This webhook | [`hetzner/cert-manager-webhook-hetzner`](https://github.com/hetzner/cert-manager-webhook-hetzner) |
 |---|---|---|
 | **Target audience** | Single-tenant, self-hosted | General purpose, officially maintained |
+| **Hetzner API** | Hetzner Cloud API (RRSets) | Hetzner Cloud API (RRSets via `hcloud-go`) |
 | **Zone detection** | Auto-detect, env var, or per-issuer config | Relies on cert-manager's `ResolvedZone` |
 | **Token management** | Single token via file/env | Per-issuer tokens via K8s Secret references |
 | **API client** | Raw HTTP (no SDK dependency) | `hcloud-go` SDK with Prometheus metrics |
+| **Observability** | Structured `slog` + OTLP tracing (opt-in) | `slog` + Prometheus metrics |
 | **Packaging** | Static `kubectl apply` manifest | Helm chart |
-| **Codebase** | ~700 lines of Go | Larger, with more abstractions |
+| **Codebase** | ~800 lines of Go | ~450 lines + SDK |
 
 **When to choose which:**
-- Choose the maintained Hetzner webhook for the safer default, broader upstream attention, or multi-tenant needs
-- Choose this webhook if you want a smaller codebase that is easy to inspect and modify, or you specifically want automatic zone detection
+- Choose **`hetzner/cert-manager-webhook-hetzner`** for the safer default, broader upstream attention, or multi-tenant needs
+- Choose **this webhook** if you want a smaller codebase that is easy to inspect and modify, you specifically want automatic zone detection, or you want OTLP tracing
 
 This project is not trying to replace the maintained Hetzner webhook. It is a focused alternative.
 
@@ -155,6 +161,18 @@ To build a local container image:
 ```bash
 podman build -t ghcr.io/mattwend/hetzner-acme-webhook:latest .
 ```
+
+### E2e conformance tests
+
+Run the cert-manager DNS01 provider conformance suite against a real Hetzner zone:
+
+```bash
+export HETZNER_DNS_API_TOKEN="your-token"
+export TEST_ZONE_NAME="example.com."
+go test -v -count=1 -tags=e2e ./...
+```
+
+The zone name **must** include a trailing dot. The token must have access to the specified zone.
 
 ## Security
 
