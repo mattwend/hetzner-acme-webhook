@@ -304,6 +304,8 @@ func (c *DNSClient) presentZone(ctx context.Context, z zone, recordName, key str
 	}
 	zoneID := z.ID
 	if zoneID == "" {
+		// Allow presentZone to operate on a name-only zone as well, which keeps
+		// the helper usable from config/env-based flows and focused unit tests.
 		var err error
 		zoneID, err = c.zoneID(ctx, z.Name)
 		if err != nil {
@@ -345,6 +347,8 @@ func (c *DNSClient) cleanupZone(ctx context.Context, z zone, recordName, key str
 	}
 	zoneID := z.ID
 	if zoneID == "" {
+		// Allow cleanupZone to operate on a name-only zone as well, which keeps
+		// the helper usable from config/env-based flows and focused unit tests.
 		var err error
 		zoneID, err = c.zoneID(ctx, z.Name)
 		if err != nil {
