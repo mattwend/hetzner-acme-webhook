@@ -6,6 +6,7 @@ package webhook
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // APIErrorCode is a stable, machine-readable error code returned by the
@@ -76,6 +77,21 @@ func IsNotFound(err error) bool {
 	var httpErr *httpError
 	if errors.As(err, &httpErr) {
 		return httpErr.StatusCode == 404
+	}
+	return false
+}
+
+// IsDuplicateTXTValue reports whether the error indicates the requested TXT
+// value already exists in the rrset, which makes Present effectively already
+// satisfied and safe to treat as success.
+func IsDuplicateTXTValue(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == 422 && strings.Contains(strings.ToLower(apiErr.Message), "duplicate value")
+	}
+	var httpErr *httpError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode == 422 && strings.Contains(strings.ToLower(httpErr.Body), "duplicate value")
 	}
 	return false
 }

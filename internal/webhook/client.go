@@ -326,6 +326,13 @@ func (c *DNSClient) presentZone(ctx context.Context, z zone, recordName, key str
 		slog.String("record", recordName),
 	)
 	if err := c.postAction(ctx, "/zones/"+zoneID+"/rrsets/"+url.PathEscape(recordName)+"/TXT/actions/add_records", body); err != nil {
+		if IsDuplicateTXTValue(err) {
+			c.logger.InfoContext(ctx, "TXT record already contains requested value",
+				slog.String("zone", zoneName),
+				slog.String("record", recordName),
+			)
+			return nil
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err

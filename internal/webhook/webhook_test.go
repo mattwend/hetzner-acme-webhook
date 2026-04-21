@@ -227,6 +227,46 @@ func TestCleanup404IsNotError(t *testing.T) {
 	}
 }
 
+func TestPresentDuplicateTXTValueIsNotError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{{"id": "zone-1", "name": "example.test"}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-1/rrsets/_acme-challenge.test/TXT/actions/add_records":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "invalid_input", "message": "duplicate value '\"token-value\"'"}})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), logger: testLogger}
+	if err := c.presentZone(context.Background(), zone{Name: "example.test"}, "_acme-challenge.test", "token-value"); err != nil {
+		t.Fatalf("presentZone: %v", err)
+	}
+}
+
+func TestPresentNonDuplicate422IsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{{"id": "zone-1", "name": "example.test"}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-1/rrsets/_acme-challenge.test/TXT/actions/add_records":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "invalid_input", "message": "some other validation error"}})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), logger: testLogger}
+	if err := c.presentZone(context.Background(), zone{Name: "example.test"}, "_acme-challenge.test", "token-value"); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestToASCII(t *testing.T) {
 	got, err := toASCII("example.com")
 	if err != nil || got != "example.com" {

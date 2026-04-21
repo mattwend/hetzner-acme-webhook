@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-04-21
+
+### Fixed
+- make DNS-01 `Present` idempotent when cert-manager retries the same challenge and the requested TXT value already exists in the Hetzner rrset
+- treat Hetzner `422 invalid_input` duplicate-value responses as success so certificate issuance and renewal do not stall after the TXT record has already been created
+
+
 ## [1.1.0] - 2026-04-21
 
 ### Added
