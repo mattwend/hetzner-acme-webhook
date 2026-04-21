@@ -9,7 +9,7 @@ metadata:
   name: letsencrypt-hetzner-explicit-zone
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory

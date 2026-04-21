@@ -10,7 +10,7 @@ metadata:
   namespace: cert-manager
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 type: Opaque
 stringData:
   token: "REPLACE_WITH_HETZNER_DNS_API_TOKEN"
@@ -22,7 +22,7 @@ metadata:
   namespace: cert-manager
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -31,7 +31,7 @@ metadata:
   namespace: kube-system
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 rules:
   - apiGroups:
       - ""
@@ -51,7 +51,7 @@ metadata:
   namespace: kube-system
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -67,7 +67,7 @@ metadata:
   name: hetzner-acme-webhook:auth-delegator
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -83,7 +83,7 @@ metadata:
   name: hetzner-acme-webhook:domain-solver
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 rules:
   - apiGroups:
       - acme.mattwend.github.io
@@ -98,7 +98,7 @@ metadata:
   name: hetzner-acme-webhook:domain-solver
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -115,7 +115,7 @@ metadata:
   namespace: cert-manager
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 spec:
   selfSigned: {}
 ---
@@ -126,7 +126,7 @@ metadata:
   namespace: cert-manager
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 spec:
   secretName: hetzner-acme-webhook-ca
   duration: 43800h # 5y
@@ -142,7 +142,7 @@ metadata:
   namespace: cert-manager
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 spec:
   ca:
     secretName: hetzner-acme-webhook-ca
@@ -154,7 +154,7 @@ metadata:
   namespace: cert-manager
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 spec:
   secretName: hetzner-acme-webhook-tls
   duration: 8760h # 1y
@@ -172,7 +172,7 @@ metadata:
   namespace: cert-manager
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 spec:
   # Scale replicas and add affinity/topology constraints as needed for HA.
   replicas: 1
@@ -183,7 +183,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: hetzner-acme-webhook
-        app.kubernetes.io/version: 1.0.0
+        app.kubernetes.io/version: 1.1.0
     spec:
       serviceAccountName: hetzner-acme-webhook
       securityContext:
@@ -192,7 +192,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: webhook
-          image: ghcr.io/mattwend/hetzner-acme-webhook:v1.0.0
+          image: ghcr.io/mattwend/hetzner-acme-webhook:v1.1.0
           imagePullPolicy: IfNotPresent
           args:
             - --secure-port=8443
@@ -255,7 +255,7 @@ metadata:
   namespace: cert-manager
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
 spec:
   selector:
     app.kubernetes.io/name: hetzner-acme-webhook
@@ -270,7 +270,7 @@ metadata:
   name: v1alpha1.acme.mattwend.github.io
   labels:
     app.kubernetes.io/name: hetzner-acme-webhook
-    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/version: 1.1.0
   annotations:
     cert-manager.io/inject-ca-from: cert-manager/hetzner-acme-webhook-tls
 spec:
