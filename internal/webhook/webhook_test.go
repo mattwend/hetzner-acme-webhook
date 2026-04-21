@@ -49,6 +49,14 @@ func TestValidateRecordNameRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestValidateRecordNameRejectsURLUnsafeChars(t *testing.T) {
+	for _, name := range []string{"foo bar", "foo%20bar", "foo?bar", "foo#bar"} {
+		if err := validateRecordName(name); err == nil {
+			t.Fatalf("expected error for %q", name)
+		}
+	}
+}
+
 func TestPresentAndCleanup(t *testing.T) {
 	var presentBody map[string]any
 	var cleanupBody map[string]any
@@ -100,7 +108,7 @@ func TestPresentAndCleanup(t *testing.T) {
 	}
 }
 
-func TestCleanupEscapesRecordNameInPath(t *testing.T) {
+func TestCleanupUsesCorrectPath(t *testing.T) {
 	var path string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
