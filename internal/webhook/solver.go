@@ -23,34 +23,65 @@ func NewSolver(client *DNSClient) *Solver {
 
 func (s *Solver) Name() string { return solverName }
 
-func (s *Solver) Present(ch *acmev1.ChallengeRequest) error {
-	zoneName, err := zoneFromConfig(ch.Config.Raw)
-	if err != nil {
-		return err
+func (s *Solver) resolveZone(ctx context.Context, ch *acmev1.ChallengeRequest) (zone, error) {
+	var raw []byte
+	if ch.Config != nil {
+		raw = ch.Config.Raw
 	}
-	recordName, err := fqdnToRelative(ch.ResolvedFQDN, zoneName)
+	zoneName, err := explicitZoneFromConfig(raw)
 	if err != nil {
-		return err
+		return zone{}, err
 	}
+	if zoneName != "" {
+		return zone{Name: zoneName}, nil
+	}
+	zoneName, err = ZoneFromEnv()
+	if err == nil {
+		return zone{Name: zoneName}, nil
+	}
+	return s.client.detectZone(ctx, ch.ResolvedFQDN)
+}
 
+func (s *Solver) Present(ch *acmev1.ChallengeRequest) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return s.client.present(ctx, zoneName, recordName, ch.Key)
+
+	z, err := s.resolveZone(ctx, ch)
+	if err != nil {
+		return err
+	}
+	if z.ID == "" {
+		z, err = s.client.zoneByName(ctx, z.Name)
+		if err != nil {
+			return err
+		}
+	}
+	recordName, err := fqdnToRelative(ch.ResolvedFQDN, z.Name)
+	if err != nil {
+		return err
+	}
+	return s.client.presentZone(ctx, z, recordName, ch.Key)
 }
 
 func (s *Solver) CleanUp(ch *acmev1.ChallengeRequest) error {
-	zoneName, err := zoneFromConfig(ch.Config.Raw)
-	if err != nil {
-		return err
-	}
-	recordName, err := fqdnToRelative(ch.ResolvedFQDN, zoneName)
-	if err != nil {
-		return err
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return s.client.cleanup(ctx, zoneName, recordName)
+
+	z, err := s.resolveZone(ctx, ch)
+	if err != nil {
+		return err
+	}
+	if z.ID == "" {
+		z, err = s.client.zoneByName(ctx, z.Name)
+		if err != nil {
+			return err
+		}
+	}
+	recordName, err := fqdnToRelative(ch.ResolvedFQDN, z.Name)
+	if err != nil {
+		return err
+	}
+	return s.client.cleanupZone(ctx, z, recordName)
 }
 
 func (s *Solver) Initialize(*rest.Config, <-chan struct{}) error { return nil }

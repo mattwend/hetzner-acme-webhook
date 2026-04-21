@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,17 +97,114 @@ func (c *DNSClient) ping(ctx context.Context, zoneName string) error {
 	return err
 }
 
-func (c *DNSClient) zoneID(ctx context.Context, zoneName string) (string, error) {
-	var res zonesResponse
-	if err := c.getJSON(ctx, "/zones", &res); err != nil {
-		return "", err
+func normalizeDNSName(value string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+}
+
+func parseNextPage(link string) string {
+	if strings.TrimSpace(link) == "" {
+		return ""
 	}
-	for _, z := range res.Zones {
-		if strings.EqualFold(strings.TrimSuffix(z.Name, "."), strings.TrimSuffix(zoneName, ".")) {
-			return z.ID, nil
+	for _, part := range strings.Split(link, ",") {
+		part = strings.TrimSpace(part)
+		if !strings.Contains(part, `rel="next"`) {
+			continue
+		}
+		start := strings.Index(part, "<")
+		end := strings.Index(part, ">")
+		if start < 0 || end <= start+1 {
+			return ""
+		}
+		u, err := url.Parse(part[start+1 : end])
+		if err != nil {
+			return ""
+		}
+		return u.RequestURI()
+	}
+	return ""
+}
+
+func (c *DNSClient) getJSONResponse(ctx context.Context, path string, out any) (*http.Response, error) {
+	resp, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAPIResponseSize)).Decode(out); err != nil {
+		resp.Body.Close()
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *DNSClient) listZones(ctx context.Context) ([]zone, error) {
+	path := "/zones"
+	all := make([]zone, 0)
+	for {
+		var res zonesResponse
+		resp, err := c.getJSONResponse(ctx, path, &res)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, res.Zones...)
+		next := parseNextPage(resp.Header.Get("Link"))
+		resp.Body.Close()
+		if next == "" {
+			return all, nil
+		}
+		path = next
+	}
+}
+
+func matchZoneByFQDN(fqdn string, zones []zone) (zone, error) {
+	normalizedFQDN := normalizeDNSName(fqdn)
+	if normalizedFQDN == "" {
+		return zone{}, errors.New("empty fqdn")
+	}
+
+	candidates := append([]zone(nil), zones...)
+	sort.Slice(candidates, func(i, j int) bool {
+		return len(normalizeDNSName(candidates[i].Name)) > len(normalizeDNSName(candidates[j].Name))
+	})
+	for _, z := range candidates {
+		normalizedZone := normalizeDNSName(z.Name)
+		if normalizedZone == "" {
+			continue
+		}
+		if normalizedFQDN == normalizedZone || strings.HasSuffix(normalizedFQDN, "."+normalizedZone) {
+			return z, nil
 		}
 	}
-	return "", fmt.Errorf("zone %s not found", zoneName)
+	return zone{}, fmt.Errorf("no matching zone found for fqdn %q", strings.TrimSpace(fqdn))
+}
+
+func (c *DNSClient) detectZone(ctx context.Context, fqdn string) (zone, error) {
+	zones, err := c.listZones(ctx)
+	if err != nil {
+		return zone{}, err
+	}
+	return matchZoneByFQDN(fqdn, zones)
+}
+
+func (c *DNSClient) zoneByName(ctx context.Context, zoneName string) (zone, error) {
+	zones, err := c.listZones(ctx)
+	if err != nil {
+		return zone{}, err
+	}
+	normalizedZoneName := normalizeDNSName(zoneName)
+	for _, z := range zones {
+		if normalizeDNSName(z.Name) == normalizedZoneName {
+			return z, nil
+		}
+	}
+	return zone{}, fmt.Errorf("zone %s not found", zoneName)
+}
+
+func (c *DNSClient) zoneID(ctx context.Context, zoneName string) (string, error) {
+	z, err := c.zoneByName(ctx, zoneName)
+	if err != nil {
+		return "", err
+	}
+	return z.ID, nil
 }
 
 func (c *DNSClient) listRRsets(ctx context.Context, zoneID string) ([]rrset, error) {
@@ -116,14 +215,23 @@ func (c *DNSClient) listRRsets(ctx context.Context, zoneID string) ([]rrset, err
 	return res.RRSets, nil
 }
 
-func (c *DNSClient) present(ctx context.Context, zoneName, recordName, value string) error {
+func (c *DNSClient) presentZone(ctx context.Context, z zone, recordName, value string) error {
 	if err := validateRecordName(recordName); err != nil {
 		return err
 	}
-	zoneID, err := c.zoneID(ctx, zoneName)
-	if err != nil {
-		return err
+	zoneID := z.ID
+	if zoneID == "" {
+		var err error
+		zoneID, err = c.zoneID(ctx, z.Name)
+		if err != nil {
+			return err
+		}
 	}
+	zoneName := strings.TrimSpace(z.Name)
+	if zoneName == "" {
+		zoneName = z.ID
+	}
+
 	rrsets, err := c.listRRsets(ctx, zoneID)
 	if err != nil {
 		return err
@@ -140,25 +248,50 @@ func (c *DNSClient) present(ctx context.Context, zoneName, recordName, value str
 	return c.postJSON(ctx, "/zones/"+zoneID+"/rrsets", body)
 }
 
-func (c *DNSClient) cleanup(ctx context.Context, zoneName, recordName string) error {
+func (c *DNSClient) present(ctx context.Context, zoneName, recordName, value string) error {
+	z, err := c.zoneByName(ctx, zoneName)
+	if err != nil {
+		return err
+	}
+	return c.presentZone(ctx, z, recordName, value)
+}
+
+func (c *DNSClient) cleanupZone(ctx context.Context, z zone, recordName string) error {
 	if err := validateRecordName(recordName); err != nil {
 		return err
 	}
-	zoneID, err := c.zoneID(ctx, zoneName)
-	if err != nil {
-		return err
+	zoneID := z.ID
+	if zoneID == "" {
+		var err error
+		zoneID, err = c.zoneID(ctx, z.Name)
+		if err != nil {
+			return err
+		}
+	}
+	zoneName := strings.TrimSpace(z.Name)
+	if zoneName == "" {
+		zoneName = z.ID
 	}
 	klog.Infof("cleanup TXT record zone=%s name=%s", zoneName, recordName)
 	return c.delete(ctx, "/zones/"+zoneID+"/rrsets/"+url.PathEscape(recordName)+"/TXT")
 }
 
+func (c *DNSClient) cleanup(ctx context.Context, zoneName, recordName string) error {
+	z, err := c.zoneByName(ctx, zoneName)
+	if err != nil {
+		return err
+	}
+	return c.cleanupZone(ctx, z, recordName)
+}
+
 func (c *DNSClient) getJSON(ctx context.Context, path string, out any) error {
-	resp, err := c.do(ctx, http.MethodGet, path, nil)
+	resp, err := c.getJSONResponse(ctx, path, out)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	return json.NewDecoder(io.LimitReader(resp.Body, maxAPIResponseSize)).Decode(out)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
 }
 
 func (c *DNSClient) postJSON(ctx context.Context, path string, body any) error {
@@ -190,7 +323,11 @@ func (c *DNSClient) delete(ctx context.Context, path string) error {
 }
 
 func (c *DNSClient) do(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	requestURL := c.baseURL + path
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		requestURL = path
+	}
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, body)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +343,11 @@ func (c *DNSClient) do(ctx context.Context, method, path string, body io.Reader)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		return nil, &httpError{StatusCode: resp.StatusCode, Body: string(data)}
+		bodyText := string(data)
+		if page := resp.Header.Get("X-Page"); page != "" {
+			bodyText += " page=" + strconv.Quote(page)
+		}
+		return nil, &httpError{StatusCode: resp.StatusCode, Body: bodyText}
 	}
 	return resp, nil
 }

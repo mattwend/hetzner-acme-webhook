@@ -23,20 +23,22 @@ func ZoneFromEnv() (string, error) {
 	return zone, nil
 }
 
-func zoneFromConfig(raw []byte) (string, error) {
+func decodeSolverConfig(raw []byte) (solverConfig, error) {
 	cfg := solverConfig{}
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &cfg); err != nil {
-			return "", fmt.Errorf("decode config: %w", err)
-		}
+	if len(raw) == 0 {
+		return cfg, nil
 	}
-	zoneName := strings.TrimSpace(cfg.Zone)
-	if zoneName != "" {
-		return zoneName, nil
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return solverConfig{}, fmt.Errorf("decode config: %w", err)
 	}
-	zoneName, err := ZoneFromEnv()
-	if err != nil {
-		return "", errors.New("missing zone in solver config and HETZNER_DNS_ZONE")
-	}
-	return zoneName, nil
+	return cfg, nil
 }
+
+func explicitZoneFromConfig(raw []byte) (string, error) {
+	cfg, err := decodeSolverConfig(raw)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(cfg.Zone), nil
+}
+

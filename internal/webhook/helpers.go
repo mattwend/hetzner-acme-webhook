@@ -11,8 +11,8 @@ import (
 )
 
 func fqdnToRelative(fqdn, zone string) (string, error) {
-	fqdn = strings.TrimSuffix(strings.TrimSpace(fqdn), ".")
-	zone = strings.TrimSuffix(strings.TrimSpace(zone), ".")
+	fqdn = normalizeDNSName(fqdn)
+	zone = normalizeDNSName(zone)
 	if fqdn == "" {
 		return "", errors.New("empty fqdn")
 	}
@@ -20,7 +20,7 @@ func fqdnToRelative(fqdn, zone string) (string, error) {
 		return "", errors.New("empty zone")
 	}
 	suffix := "." + zone
-	if !strings.EqualFold(fqdn, zone) && !strings.HasSuffix(strings.ToLower(fqdn), strings.ToLower(suffix)) {
+	if fqdn != zone && !strings.HasSuffix(fqdn, suffix) {
 		return "", fmt.Errorf("fqdn %q is outside zone %q", fqdn, zone)
 	}
 	name := strings.TrimSuffix(fqdn, suffix)
