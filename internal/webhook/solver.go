@@ -81,7 +81,7 @@ func (s *Solver) CleanUp(ch *acmev1.ChallengeRequest) error {
 	if err != nil {
 		return err
 	}
-	return s.client.cleanupZone(ctx, z, recordName)
+	return s.client.cleanupZone(ctx, z, recordName, ch.Key)
 }
 
 func (s *Solver) Initialize(*rest.Config, <-chan struct{}) error { return nil }

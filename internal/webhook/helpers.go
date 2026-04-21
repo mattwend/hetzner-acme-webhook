@@ -6,9 +6,14 @@ package webhook
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
+
+	"golang.org/x/net/idna"
 )
+
+func toASCII(value string) (string, error) {
+	return idna.Lookup.ToASCII(value)
+}
 
 func fqdnToRelative(fqdn, zone string) (string, error) {
 	fqdn = normalizeDNSName(fqdn)
@@ -19,14 +24,38 @@ func fqdnToRelative(fqdn, zone string) (string, error) {
 	if zone == "" {
 		return "", errors.New("empty zone")
 	}
-	suffix := "." + zone
-	if fqdn != zone && !strings.HasSuffix(fqdn, suffix) {
-		return "", fmt.Errorf("fqdn %q is outside zone %q", fqdn, zone)
+	labels := strings.Split(fqdn, ".")
+	for i, label := range labels {
+		if label == "" {
+			continue
+		}
+		if strings.HasPrefix(label, "_") {
+			rest, err := toASCII(strings.TrimPrefix(label, "_"))
+			if err != nil {
+				return "", err
+			}
+			labels[i] = "_" + rest
+			continue
+		}
+		asciiLabel, err := toASCII(label)
+		if err != nil {
+			return "", err
+		}
+		labels[i] = asciiLabel
 	}
-	name := strings.TrimSuffix(fqdn, suffix)
+	asciiFQDN := strings.Join(labels, ".")
+	asciiZone, err := toASCII(zone)
+	if err != nil {
+		return "", err
+	}
+	suffix := "." + asciiZone
+	if asciiFQDN != asciiZone && !strings.HasSuffix(asciiFQDN, suffix) {
+		return "", fmt.Errorf("fqdn %q is outside zone %q", asciiFQDN, asciiZone)
+	}
+	name := strings.TrimSuffix(asciiFQDN, suffix)
 	name = strings.TrimSuffix(name, ".")
 	if name == "" {
-		return "", fmt.Errorf("fqdn %q resolves to zone apex, expected challenge record", fqdn)
+		return "", fmt.Errorf("fqdn %q resolves to zone apex, expected challenge record", asciiFQDN)
 	}
 	if err := validateRecordName(name); err != nil {
 		return "", err
@@ -48,18 +77,4 @@ func validateRecordName(name string) error {
 		return fmt.Errorf("invalid record name %q", name)
 	}
 	return nil
-}
-
-func mergeUnique(existing []string, value string) []string {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(existing)+1)
-	for _, item := range append(existing, value) {
-		if _, ok := seen[item]; ok {
-			continue
-		}
-		seen[item] = struct{}{}
-		out = append(out, item)
-	}
-	sort.Strings(out)
-	return out
 }

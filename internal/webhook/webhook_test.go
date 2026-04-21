@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	acmev1 "github.com/cert-manager/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -21,6 +23,16 @@ func TestFQDNToRelative(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got != "_acme-challenge.test" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFQDNToRelativeIDN(t *testing.T) {
+	got, err := fqdnToRelative("_acme-challenge.münchen.de.", "münchen.de")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "_acme-challenge" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -38,21 +50,20 @@ func TestValidateRecordNameRejectsTraversal(t *testing.T) {
 }
 
 func TestPresentAndCleanup(t *testing.T) {
-	var posted map[string]any
-	var deleted string
+	var presentBody map[string]any
+	var cleanupBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/zones":
 			_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{{"id": "zone-1", "name": "example.test"}}})
-		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-1/rrsets":
-			_ = json.NewEncoder(w).Encode(map[string]any{"rrsets": []map[string]any{}})
-		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-1/rrsets":
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-1/rrsets/_acme-challenge.test/TXT/actions/add_records":
 			defer r.Body.Close()
-			_ = json.NewDecoder(r.Body).Decode(&posted)
-			w.WriteHeader(http.StatusCreated)
-		case r.Method == http.MethodDelete:
-			deleted = r.URL.Path
-			w.WriteHeader(http.StatusNoContent)
+			_ = json.NewDecoder(r.Body).Decode(&presentBody)
+			_ = json.NewEncoder(w).Encode(map[string]any{"action": map[string]any{"id": 1, "status": "success"}})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-1/rrsets/_acme-challenge.test/TXT/actions/remove_records":
+			defer r.Body.Close()
+			_ = json.NewDecoder(r.Body).Decode(&cleanupBody)
+			_ = json.NewEncoder(w).Encode(map[string]any{"action": map[string]any{"id": 2, "status": "success"}})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
@@ -61,29 +72,43 @@ func TestPresentAndCleanup(t *testing.T) {
 
 	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}
 	ctx := context.Background()
-	if err := c.present(ctx, "example.test", "_acme-challenge.test", "token-value"); err != nil {
+	z := zone{Name: "example.test"}
+	if err := c.presentZone(ctx, z, "_acme-challenge.test", "token-value"); err != nil {
 		t.Fatalf("present: %v", err)
 	}
-	if posted["name"] != "_acme-challenge.test" || posted["type"] != "TXT" {
-		t.Fatalf("unexpected payload: %#v", posted)
+	if got := presentBody["ttl"]; got != float64(60) {
+		t.Fatalf("unexpected ttl: %#v", got)
 	}
-	if err := c.cleanup(ctx, "example.test", "_acme-challenge.test"); err != nil {
+	presentRecords, ok := presentBody["records"].([]any)
+	if !ok || len(presentRecords) != 1 {
+		t.Fatalf("unexpected present payload: %#v", presentBody)
+	}
+	presentRecord, ok := presentRecords[0].(map[string]any)
+	if !ok || presentRecord["value"] != `"token-value"` {
+		t.Fatalf("unexpected present payload: %#v", presentBody)
+	}
+	if err := c.cleanupZone(ctx, z, "_acme-challenge.test", "token-value"); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if deleted != "/zones/zone-1/rrsets/_acme-challenge.test/TXT" {
-		t.Fatalf("unexpected delete path: %s", deleted)
+	cleanupRecords, ok := cleanupBody["records"].([]any)
+	if !ok || len(cleanupRecords) != 1 {
+		t.Fatalf("unexpected cleanup payload: %#v", cleanupBody)
+	}
+	cleanupRecord, ok := cleanupRecords[0].(map[string]any)
+	if !ok || cleanupRecord["value"] != `"token-value"` {
+		t.Fatalf("unexpected cleanup payload: %#v", cleanupBody)
 	}
 }
 
 func TestCleanupEscapesRecordNameInPath(t *testing.T) {
-	var deleted string
+	var path string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/zones":
 			_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{{"id": "zone-1", "name": "example.test"}}})
-		case r.Method == http.MethodDelete:
-			deleted = r.URL.EscapedPath()
-			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost:
+			path = r.URL.EscapedPath()
+			_ = json.NewEncoder(w).Encode(map[string]any{"action": map[string]any{"id": 2, "status": "success"}})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
@@ -91,11 +116,114 @@ func TestCleanupEscapesRecordNameInPath(t *testing.T) {
 	defer server.Close()
 
 	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}
-	if err := c.cleanup(context.Background(), "example.test", "_acme-challenge.test"); err != nil {
+	if err := c.cleanupZone(context.Background(), zone{Name: "example.test"}, "_acme-challenge.test", "token-value"); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if deleted != "/zones/zone-1/rrsets/_acme-challenge.test/TXT" {
-		t.Fatalf("unexpected escaped delete path: %s", deleted)
+	if path != "/zones/zone-1/rrsets/_acme-challenge.test/TXT/actions/remove_records" {
+		t.Fatalf("unexpected escaped path: %s", path)
+	}
+}
+
+func TestFormatTXTRecord(t *testing.T) {
+	if got := formatTXTRecord("hello"); got != `"hello"` {
+		t.Fatalf("got %q", got)
+	}
+	if got := formatTXTRecord(`a"b`); got != `"a\"b"` {
+		t.Fatalf("got %q", got)
+	}
+	exact := strings.Repeat("a", 255)
+	if got := formatTXTRecord(exact); got != `"`+exact+`"` {
+		t.Fatalf("unexpected exact 255-byte output length=%d", len(got))
+	}
+	over := strings.Repeat("a", 256)
+	expected := `"` + strings.Repeat("a", 255) + `" "a"`
+	if got := formatTXTRecord(over); got != expected {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestPollActionSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/actions/1" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"action": map[string]any{"id": 1, "status": "success"}})
+	}))
+	defer server.Close()
+
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), pollInterval: time.Millisecond}
+	if err := c.pollAction(context.Background(), 1); err != nil {
+		t.Fatalf("pollAction: %v", err)
+	}
+}
+
+func TestPollActionError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/actions/1" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"action": map[string]any{"id": 1, "status": "error", "error": map[string]any{"code": "zone_error", "message": "fail"}}})
+	}))
+	defer server.Close()
+
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), pollInterval: time.Millisecond}
+	err := c.pollAction(context.Background(), 1)
+	if err == nil || !strings.Contains(err.Error(), "fail") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPollActionWaitsForCompletion(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/actions/1" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		calls++
+		status := "running"
+		if calls == 2 {
+			status = "success"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"action": map[string]any{"id": 1, "status": status}})
+	}))
+	defer server.Close()
+
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client(), pollInterval: time.Millisecond}
+	if err := c.pollAction(context.Background(), 1); err != nil {
+		t.Fatalf("pollAction: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 calls, got %d", calls)
+	}
+}
+
+func TestCleanup404IsNotError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{{"id": "zone-1", "name": "example.test"}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-1/rrsets/_acme-challenge.test/TXT/actions/remove_records":
+			http.Error(w, "missing", http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	c := &DNSClient{baseURL: server.URL, token: "x", httpClient: server.Client()}
+	if err := c.cleanupZone(context.Background(), zone{Name: "example.test"}, "_acme-challenge.test", "token-value"); err != nil {
+		t.Fatalf("cleanupZone: %v", err)
+	}
+}
+
+func TestToASCII(t *testing.T) {
+	got, err := toASCII("example.com")
+	if err != nil || got != "example.com" {
+		t.Fatalf("got %q err=%v", got, err)
+	}
+	got, err = toASCII("münchen.de")
+	if err != nil || got != "xn--mnchen-3ya.de" {
+		t.Fatalf("got %q err=%v", got, err)
 	}
 }
 
@@ -242,10 +370,8 @@ func TestPresentWithExplicitZoneResolvesIDBeforeMutation(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/zones":
 			_ = json.NewEncoder(w).Encode(map[string]any{"zones": []map[string]any{{"id": "zone-1", "name": "example.test"}}})
-		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-1/rrsets":
-			_ = json.NewEncoder(w).Encode(map[string]any{"rrsets": []map[string]any{}})
-		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-1/rrsets":
-			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-1/rrsets/_acme-challenge.test/TXT/actions/add_records":
+			_ = json.NewEncoder(w).Encode(map[string]any{"action": map[string]any{"id": 1, "status": "success"}})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
@@ -257,8 +383,8 @@ func TestPresentWithExplicitZoneResolvesIDBeforeMutation(t *testing.T) {
 	if err := s.Present(ch); err != nil {
 		t.Fatalf("present: %v", err)
 	}
-	if len(requests) != 3 {
-		t.Fatalf("expected 3 requests, got %d: %#v", len(requests), requests)
+	if len(requests) != 2 {
+		t.Fatalf("expected 2 requests, got %d: %#v", len(requests), requests)
 	}
 }
 

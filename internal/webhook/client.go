@@ -4,6 +4,7 @@
 package webhook
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"k8s.io/klog/v2"
 )
@@ -30,9 +32,10 @@ const (
 var tokenFilePath = "/var/run/secrets/hetzner-dns/token"
 
 type DNSClient struct {
-	baseURL    string
-	httpClient *http.Client
-	token      string
+	baseURL      string
+	httpClient   *http.Client
+	token        string
+	pollInterval time.Duration
 }
 
 type zonesResponse struct {
@@ -44,15 +47,19 @@ type zone struct {
 	Name string `json:"name"`
 }
 
-type rrsetsResponse struct {
-	RRSets []rrset `json:"rrsets"`
+type actionResponse struct {
+	Action actionStatus `json:"action"`
 }
 
-type rrset struct {
-	Name    string   `json:"name"`
-	Type    string   `json:"type"`
-	TTL     int      `json:"ttl,omitempty"`
-	Records []string `json:"records,omitempty"`
+type actionStatus struct {
+	ID     int64      `json:"id"`
+	Status string     `json:"status"`
+	Error  *actionErr `json:"error"`
+}
+
+type actionErr struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 type httpError struct {
@@ -81,8 +88,9 @@ func NewDNSClient() (*DNSClient, error) {
 		baseURL = defaultAPIBase
 	}
 	return &DNSClient{
-		baseURL: baseURL,
-		token:   token,
+		baseURL:      baseURL,
+		token:        token,
+		pollInterval: time.Second,
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
 			Transport: &http.Transport{
@@ -207,15 +215,29 @@ func (c *DNSClient) zoneID(ctx context.Context, zoneName string) (string, error)
 	return z.ID, nil
 }
 
-func (c *DNSClient) listRRsets(ctx context.Context, zoneID string) ([]rrset, error) {
-	var res rrsetsResponse
-	if err := c.getJSON(ctx, "/zones/"+zoneID+"/rrsets", &res); err != nil {
-		return nil, err
+func formatTXTRecord(value string) string {
+	escaped := strings.ReplaceAll(value, `"`, `\"`)
+	if escaped == "" {
+		return `""`
 	}
-	return res.RRSets, nil
+
+	chunks := make([]string, 0, (len(escaped)/255)+1)
+	var current bytes.Buffer
+	for _, r := range escaped {
+		runeSize := utf8.RuneLen(r)
+		if current.Len() > 0 && current.Len()+runeSize > 255 {
+			chunks = append(chunks, `"`+current.String()+`"`)
+			current.Reset()
+		}
+		current.WriteRune(r)
+	}
+	if current.Len() > 0 {
+		chunks = append(chunks, `"`+current.String()+`"`)
+	}
+	return strings.Join(chunks, " ")
 }
 
-func (c *DNSClient) presentZone(ctx context.Context, z zone, recordName, value string) error {
+func (c *DNSClient) presentZone(ctx context.Context, z zone, recordName, key string) error {
 	if err := validateRecordName(recordName); err != nil {
 		return err
 	}
@@ -231,32 +253,13 @@ func (c *DNSClient) presentZone(ctx context.Context, z zone, recordName, value s
 	if zoneName == "" {
 		zoneName = z.ID
 	}
-
-	rrsets, err := c.listRRsets(ctx, zoneID)
-	if err != nil {
-		return err
-	}
-	values := []string{value}
-	for _, rr := range rrsets {
-		if rr.Name == recordName && rr.Type == "TXT" {
-			values = mergeUnique(rr.Records, value)
-			break
-		}
-	}
-	body := map[string]any{"name": recordName, "type": "TXT", "ttl": presentTTL, "records": values}
-	klog.Infof("present TXT record zone=%s name=%s values=%d", zoneName, recordName, len(values))
-	return c.postJSON(ctx, "/zones/"+zoneID+"/rrsets", body)
+	formatted := formatTXTRecord(key)
+	body := map[string]any{"records": []map[string]string{{"value": formatted}}, "ttl": presentTTL}
+	klog.Infof("present TXT record zone=%s name=%s", zoneName, recordName)
+	return c.postAction(ctx, "/zones/"+zoneID+"/rrsets/"+url.PathEscape(recordName)+"/TXT/actions/add_records", body)
 }
 
-func (c *DNSClient) present(ctx context.Context, zoneName, recordName, value string) error {
-	z, err := c.zoneByName(ctx, zoneName)
-	if err != nil {
-		return err
-	}
-	return c.presentZone(ctx, z, recordName, value)
-}
-
-func (c *DNSClient) cleanupZone(ctx context.Context, z zone, recordName string) error {
+func (c *DNSClient) cleanupZone(ctx context.Context, z zone, recordName, key string) error {
 	if err := validateRecordName(recordName); err != nil {
 		return err
 	}
@@ -272,16 +275,17 @@ func (c *DNSClient) cleanupZone(ctx context.Context, z zone, recordName string) 
 	if zoneName == "" {
 		zoneName = z.ID
 	}
+	formatted := formatTXTRecord(key)
+	body := map[string]any{"records": []map[string]string{{"value": formatted}}}
 	klog.Infof("cleanup TXT record zone=%s name=%s", zoneName, recordName)
-	return c.delete(ctx, "/zones/"+zoneID+"/rrsets/"+url.PathEscape(recordName)+"/TXT")
-}
-
-func (c *DNSClient) cleanup(ctx context.Context, zoneName, recordName string) error {
-	z, err := c.zoneByName(ctx, zoneName)
-	if err != nil {
+	if err := c.postAction(ctx, "/zones/"+zoneID+"/rrsets/"+url.PathEscape(recordName)+"/TXT/actions/remove_records", body); err != nil {
+		var httpErr *httpError
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
+			return nil
+		}
 		return err
 	}
-	return c.cleanupZone(ctx, z, recordName)
+	return nil
 }
 
 func (c *DNSClient) getJSON(ctx context.Context, path string, out any) error {
@@ -294,32 +298,64 @@ func (c *DNSClient) getJSON(ctx context.Context, path string, out any) error {
 	return nil
 }
 
-func (c *DNSClient) postJSON(ctx context.Context, path string, body any) error {
+func formatActionError(action actionStatus) error {
+	if action.Error == nil {
+		return fmt.Errorf("action %d failed with status %q", action.ID, action.Status)
+	}
+	return fmt.Errorf("action %d failed: %s: %s", action.ID, action.Error.Code, action.Error.Message)
+}
+
+func (c *DNSClient) postAction(ctx context.Context, path string, body any) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	resp, err := c.do(ctx, http.MethodPost, path, strings.NewReader(string(payload)))
+	var res actionResponse
+	resp, err := c.do(ctx, http.MethodPost, path, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAPIResponseSize)).Decode(&res); err != nil {
+		return err
+	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	return nil
+	switch res.Action.Status {
+	case "success":
+		return nil
+	case "error":
+		return formatActionError(res.Action)
+	default:
+		return c.pollAction(ctx, res.Action.ID)
+	}
 }
 
-func (c *DNSClient) delete(ctx context.Context, path string) error {
-	resp, err := c.do(ctx, http.MethodDelete, path, nil)
-	if err != nil {
-		var httpErr *httpError
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
-			return nil
-		}
-		return err
+func (c *DNSClient) pollAction(ctx context.Context, actionID int64) error {
+	pollInterval := c.pollInterval
+	if pollInterval <= 0 {
+		pollInterval = time.Second
 	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return nil
+	for {
+		var res actionResponse
+		if err := c.getJSON(ctx, "/actions/"+strconv.FormatInt(actionID, 10), &res); err != nil {
+			return err
+		}
+		switch res.Action.Status {
+		case "success":
+			return nil
+		case "error":
+			return formatActionError(res.Action)
+		}
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (c *DNSClient) do(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
